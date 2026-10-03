@@ -24,6 +24,8 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .atomicio import write_json_atomic
+
 PBKDF2_ITERATIONS = 100_000
 # 这些字段是运行时状态，不参与指纹（quota 每请求都可能变，指纹变了就是每请求重载）
 _RUNTIME_ONLY_FIELDS = ("used",)
@@ -154,7 +156,7 @@ class UserPool:
             "groups": self.groups,
             "users": [u.to_dict() for u in self.users],
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_json_atomic(path, payload)
 
     # -- 查询 ------------------------------------------------------------
 
@@ -365,10 +367,9 @@ class RedeemStore:
         return [RedeemCode.from_dict(i) for i in json.loads(self.path.read_text(encoding="utf-8")).get("codes", [])]
 
     def _save(self, codes: list[RedeemCode]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps({"schemaVersion": 1, "codes": [c.to_dict() for c in codes]}, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+        write_json_atomic(
+            self.path,
+            {"schemaVersion": 1, "codes": [c.to_dict() for c in codes]},
         )
 
     def generate(self, count: int, credits: int, *, prefix: str = "rhx") -> list[RedeemCode]:

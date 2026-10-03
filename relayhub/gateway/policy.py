@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .atomicio import write_json_atomic
+
 # 单条目的两种管理动作（可同时为真：又拉黑又优先没有意义，拉黑赢）
 KIND_IP = "ip"
 KIND_DEVICE = "device"
@@ -90,15 +92,14 @@ class PolicyStore:
         return state
 
     def _save(self) -> None:
-        payload = {
-            "schemaVersion": SCHEMA_VERSION,
-            "ips": {k: v.to_dict() for k, v in self._state.ips.items()},
-            "devices": {k: v.to_dict() for k, v in self._state.devices.items()},
-        }
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            write_json_atomic(
+                self.path,
+                {
+                    "schemaVersion": SCHEMA_VERSION,
+                    "ips": {k: v.to_dict() for k, v in self._state.ips.items()},
+                    "devices": {k: v.to_dict() for k, v in self._state.devices.items()},
+                },
             )
             self._fingerprint = _fingerprint(self.path)
         except OSError:

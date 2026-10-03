@@ -36,6 +36,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Sequence
 
+from .atomicio import write_json_atomic
+
 # 令牌前缀：让它在一堆 sk-/ak- 里一眼认出是本网关发的，也方便在日志里 grep。
 TOKEN_PREFIX = "rht_"
 
@@ -234,12 +236,11 @@ class TokenPool:
 
     def save(self, path: Path) -> None:
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schemaVersion": SCHEMA_VERSION,
             "tokens": [t.to_dict() for t in self.tokens],
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_json_atomic(path, payload)
 
     # -- 增删改 ----------------------------------------------------------
 

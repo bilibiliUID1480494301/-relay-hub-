@@ -20,9 +20,17 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
+from .atomicio import write_json_atomic
+
 PROTOCOL_ANTHROPIC = "anthropic-messages"
 PROTOCOL_OPENAI_CHAT = "openai-chat"
 SUPPORTED_PROTOCOLS = (PROTOCOL_ANTHROPIC, PROTOCOL_OPENAI_CHAT)
+# [OSS-EXCLUDE-START] 订阅凭据反代协议：仅限内部使用，协议常量与说明一并内置
+# Gemini 订阅（AI Pro）：gemini-cli 的 OAuth 凭据 → Code Assist API（v1internal）。
+# 渠道 api_key 存的是 refresh_token，访问令牌由 upstream 层刷新缓存。
+PROTOCOL_GEMINI = "gemini-codeassist"
+SUPPORTED_PROTOCOLS = (PROTOCOL_ANTHROPIC, PROTOCOL_OPENAI_CHAT, PROTOCOL_GEMINI)
+# [OSS-EXCLUDE-END]
 
 # 鉴权头模式：auto=按协议默认（anthropic→x-api-key，openai→Bearer）；
 # bearer=强制 Authorization: Bearer（部分上游要求 Bearer 而不是 x-api-key）。
@@ -147,14 +155,29 @@ class UpstreamKey:
     # 额外请求头（如部分上游需要的 anthropic-beta）。
     # dict 以 JSON 形式随号池落盘，出站时原样合并进请求头。
     extra_headers: dict[str, str] = field(default_factory=dict)
+    # [OSS-EXCLUDE-START] 订阅凭据反代专用字段：仅限内部使用
+    # Gemini OAuth 覆写：默认用内置的公共 client 凭据，
+    # Google 轮换或企业租户时按渠道覆盖。
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""
+    # [OSS-EXCLUDE-END]
     # 剩余额度（credit 感知调度用）。-1 = 未知：未知的不参与 most_credits 排序，
     # 也不要当成 0 展示——「没记录过」和「用光了」是两回事。
     credits: int = -1
     credits_updated_at: float = 0.0
+    # [OSS-EXCLUDE-START] 代签到配置字段：仅限内部使用
+    # 签到/领取配置（jobs.py 执行）。结构：
+    # {"url": ..., "method": "POST", "headers": {...}, "body": ...}
+    # 端点各家不同，网关只做通用执行，不做协议假设。
+    checkin: dict = field(default_factory=dict)
+    # [OSS-EXCLUDE-END]
     # 运行时状态（持久化，用于熔断与用量统计）
     cooldown_tier: str = ""  # 当前生效的冷却档位；"" = 未在冷却
     consecutive_failures: int = 0
     disabled_until: float = 0.0
+    # [OSS-EXCLUDE-START] 代签到运行时字段
+    last_checkin: float = 0.0
+    # [OSS-EXCLUDE-END]
     last_error: str = ""
     usage: Usage = field(default_factory=Usage)
 
@@ -220,11 +243,21 @@ class UpstreamKey:
             extra_headers={
                 str(k): str(v) for k, v in (raw.get("extra_headers") or {}).items()
             },
+            # [OSS-EXCLUDE-START] 订阅凭据反代字段
+            oauth_client_id=str(raw.get("oauth_client_id") or ""),
+            oauth_client_secret=str(raw.get("oauth_client_secret") or ""),
+            # [OSS-EXCLUDE-END]
             credits=int(raw.get("credits", -1)),
             credits_updated_at=float(raw.get("credits_updated_at", 0.0) or 0.0),
+            # [OSS-EXCLUDE-START] 代签到字段
+            checkin=dict(raw.get("checkin") or {}),
+            # [OSS-EXCLUDE-END]
             cooldown_tier=str(raw.get("cooldown_tier", "")),
             consecutive_failures=int(raw.get("consecutive_failures", 0)),
             disabled_until=float(raw.get("disabled_until", 0.0) or 0.0),
+            # [OSS-EXCLUDE-START] 代签到运行时字段
+            last_checkin=float(raw.get("last_checkin", 0.0) or 0.0),
+            # [OSS-EXCLUDE-END]
             last_error=str(raw.get("last_error", "")),
             usage=Usage(
                 requests=int(usage.get("requests", 0)),
@@ -298,7 +331,6 @@ class KeyPool:
 
     def save(self, path: Path) -> None:
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schemaVersion": 1,
             "strategy": self.strategy,
@@ -308,7 +340,7 @@ class KeyPool:
             "config_epoch": self.config_epoch,
             "keys": [key.to_dict() for key in self.keys],
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_json_atomic(path, payload)
 
     # -- 增删改 ----------------------------------------------------------
 
@@ -521,6 +553,10 @@ class KeyPool:
                     "cooldown_tier": key.cooldown_tier,
                     "credits": key.credits,
                     "credits_updated_at": key.credits_updated_at,
+                    # [OSS-EXCLUDE-START] 代签到运行时状态
+                    "last_checkin": key.last_checkin,
+                    "has_checkin": bool(key.checkin.get("url")),
+                    # [OSS-EXCLUDE-END]
                     "models": list(key.models),
                     "consecutive_failures": key.consecutive_failures,
                     "last_error": key.last_error,
@@ -554,9 +590,16 @@ def key_from_spec(raw: dict) -> UpstreamKey:
         model_windows={str(k): int(v) for k, v in (raw.get("model_windows") or {}).items()},
         weight=int(raw.get("weight", 1)),
         credits=int(raw.get("credits", -1)),
+        # [OSS-EXCLUDE-START] 代签到字段
+        checkin=dict(raw.get("checkin") or {}),
+        # [OSS-EXCLUDE-END]
         auth_mode=str(raw.get("auth_mode") or AUTH_MODE_AUTO),
         extra_headers={
             str(k): str(v) for k, v in (raw.get("extra_headers") or {}).items()
         },
+        # [OSS-EXCLUDE-START] 订阅凭据反代字段
+        oauth_client_id=str(raw.get("oauth_client_id") or ""),
+        oauth_client_secret=str(raw.get("oauth_client_secret") or ""),
+        # [OSS-EXCLUDE-END]
         note=str(raw.get("note", "")),
     )
