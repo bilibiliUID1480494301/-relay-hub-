@@ -1,5 +1,10 @@
 # relay-hub · 局域网/自托管大模型中转站
 
+[![CI](https://github.com/bilibiliUID1480494301/relay-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/bilibiliUID1480494301/relay-hub/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
+![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
+
 A self-hosted LLM relay/gateway for your LAN: multi-upstream key pool, downstream
 tokens, usage accounting, circuit breaking, and conformance probing. Pure Python
 standard library — no third-party runtime dependencies.
