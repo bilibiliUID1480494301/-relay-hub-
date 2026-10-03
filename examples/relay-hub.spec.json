@@ -1,0 +1,12 @@
+{
+  "name": "Relay Hub",
+  "base_url": "http://127.0.0.1:8799",
+  "api_key": "rh_dev",
+  "kind": "anthropic",
+  "group": "standard-personal",
+  "models": [
+    { "model_id": "glm-5.2", "context_window": 1000000, "reasoning": true },
+    { "model_id": "deepseek-v4-pro", "context_window": 1000000, "max_output": 384000 },
+    { "model_id": "deepseek-v4-flash", "context_window": 1000000 }
+  ]
+}

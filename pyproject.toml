@@ -1,0 +1,10 @@
+[project]
+name = "relay-hub"
+version = "0.1.0"
+description = "局域网/自托管大模型中转站：多上游号池、下游令牌、用量记账与一致性探测"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
