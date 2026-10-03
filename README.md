@@ -21,6 +21,25 @@ OpenAI/Anthropic 兼容入口，带号池调度、下游令牌、用量记账、
 - **一致性探测** Conformance probe：对着任意兼容网关跑合规探测，抓出不合规实现。
 - **请求审计** Request audit：控制面操作审计与请求明细（脱敏）。
 
+## 特色 Highlights
+
+- **三层防环路** Loop protection：转发链路标识（`Via` / `X-Relay-Hub-Hops` /
+  `X-Request-ID`，逐跳累加，本站实例标记一现即判环）+ 入口请求内容指纹在飞计数 +
+  出口「同指纹 × 同上游」时间窗查重。就算中间隔了会改写参数的第三方网关也能兜住，
+  专治「上游指回自己」的拓扑环。
+- **语义指纹应答缓存** Response cache：非流式 200 应答按语义指纹缓存 5 分钟——指纹只含
+  模型、规范化 messages、tools、采样参数等语义字段，绝不混入链路标识/鉴权/时间戳
+  （否则永不命中）；按调用者隔离，不跨用户串答案；命中即回、不触上游、不预扣额度。
+- **缓存记账** Cache accounting：上游 usage 中的缓存命中量（Anthropic 的
+  `cache_read/cache_creation_input_tokens`、OpenAI 的 `cached_tokens` 折算）记入
+  渠道用量与请求明细，管理控制台直接可见。
+- **额度预扣与多退少补** Pre-consume：绑定用户的请求先按输入体量预估冻结额度，
+  完工后按实际用量结算，上游失败全额退——堵「发大 prompt 中途断开白嫖上游」的洞。
+- **排队而非硬拒** Concurrency gate：并发满员进入 VIP/普通双等待池排队（优先名单
+  设备/IP 插队），队满或超时才 429；叠加单 IP 与令牌双层 RPM 限流。
+- **本机推理服务扫描** Local scan：Ollama / LM Studio / vLLM / llama.cpp 等一键扫进号池，
+  与官方 API 渠道同权参与调度、熔断与记账。
+
 ## 快速开始 Quick Start
 
 ```bash
