@@ -69,6 +69,37 @@ python -m relayhub.gateway admin
 更多子命令（`token` / `clients` / `pair` / `audit` / `check` / `scan` / `requests` /
 `usage`）见各自主命令的 `--help`。See each subcommand's `--help` for details.
 
+## Python API 建站（不想碰命令行看这里）
+
+```python
+import hubrelay
+
+st = hubrelay.Station(port=8799, master_key="rh_master")  # 建站（默认仅本机可访问）
+
+# 1) 扫描本机推理服务（Ollama / LM Studio / vLLM / llama.cpp），扫到的一键入池
+print(hubrelay.scan_local())
+st.scan_and_import()
+
+# 2) 或手动加远程上游（官方 API Key，协议自动识别；主备用 priority）
+st.add_upstream(base_url="https://api.example.com/v1",
+                api_key="sk-xxx", models=["gpt-4o", "gpt-4o-mini"])
+
+# 3) 发下游令牌（给手机/平板/第三方；明文只在发放这一次显示）
+token = st.create_token("我的手机", rpm=60, models=["gpt-4o"])
+
+# 4) 起站：脚本里用 background=True，脚本/服务用 st.stop() 停
+url = st.serve(background=True)     # → http://127.0.0.1:8799
+```
+
+最快路径一行起站：
+
+```python
+st, url = hubrelay.quickstart("http://127.0.0.1:11434", models=["qwen2.5"])
+```
+
+所有方法都有中文 docstring；号池/令牌文件与 CLI 完全互通（`Station(home=...)` 对应
+CLI 的 `--pool/--tokens` 文件）。令牌明文只显示一次，落盘为 SHA-256 哈希。
+
 ## 运行环境 Requirements
 
 - Python 3.10+（仅标准库）
