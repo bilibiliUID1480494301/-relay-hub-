@@ -1,6 +1,6 @@
 [project]
 name = "hubrelay"
-version = "0.2.3"
+version = "0.2.4"
 description = "Self-hosted LLM relay/gateway for LAN: multi-upstream key pool, downstream tokens, usage accounting, conformance probing (局域网大模型中转站)"
 readme = "README.md"
 license = {text = "MIT"}

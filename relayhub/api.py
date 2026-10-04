@@ -1,26 +1,31 @@
-"""hubrelay 高层 Python API —— 十行代码建一个中转站。
+"""hubrelay high-level Python API — build a relay station in ten lines.
 
-面向不想碰命令行的用户::
+::
 
     import hubrelay
 
-    st = hubrelay.Station(port=8799, master_key="rh_master")  # 建站（默认本机回环）
-    print(hubrelay.scan_local())          # 1) 扫描本机推理服务（Ollama/LM Studio/...）
-    st.scan_and_import()                  # 2) 扫到的一键入池
-    st.add_upstream(                      #    或手动加远程上游（官方 API Key）
+    st = hubrelay.Station(port=8799, master_key="rh_master")  # create a station (loopback only)
+    print(hubrelay.scan_local())          # 1) scan local inference servers (Ollama/LM Studio/...)
+    st.scan_and_import()                  # 2) import whatever was found, one call
+    st.add_upstream(                      #    ...or add a remote upstream manually
         base_url="https://api.example.com/v1",
         api_key="sk-xxx",
         models=["gpt-4o", "gpt-4o-mini"],
     )
-    token = st.create_token("我的手机", rpm=60)   # 3) 发下游令牌（明文只显示这一次）
-    st.serve()                            # 4) 起站（Ctrl+C 停）；background=True 起线程
+    token = st.create_token("my-phone", rpm=60)   # 3) issue a downstream token (plaintext shown ONCE)
+    st.serve()                            # 4) serve (Ctrl+C to stop); background=True for a thread
 
-所有函数都有中文 docstring；底层与 CLI 共用同一套号池/令牌文件，格式互通。
+Every method is documented in English and Chinese (中文). The pool/token files are
+the same format the CLI uses, so both tools stay interchangeable.
+
+高层中文 API —— 十行代码建一个中转站；所有方法均有中英双语说明，
+号池/令牌文件与 CLI 完全互通。
 """
 
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,17 +50,20 @@ from .gateway.tokens import (
     generate_token,
 )
 
+__version__ = "0.2.4"
+
 __all__ = [
     "Station",
     "TokenIssued",
     "UpstreamAdded",
     "scan_local",
     "quickstart",
+    "__version__",
 ]
 
 
 # --------------------------------------------------------------------------
-# 本机扫描
+# Local scan / 本机扫描
 # --------------------------------------------------------------------------
 
 
@@ -64,30 +72,38 @@ def scan_local(
     ports: Sequence[int] | None = None,
     timeout: float = 2.0,
 ) -> list[LocalServer]:
-    """扫描本机推理服务（Ollama / LM Studio / vLLM / llama.cpp 常用端口）。
+    """Scan local inference servers (Ollama / LM Studio / vLLM / llama.cpp).
 
-    返回识别出的服务列表；每个元素带 .kind（如 "ollama"）、.base_url、
-    .models（探测到的模型名）。扫描不到就返回空列表——不影响手动加远程上游。
+    扫描本机推理服务，返回识别出的服务列表；每个元素带 .kind（如 "ollama"）、
+    .base_url、.models（探测到的模型名）。Nothing found → empty list; manual
+    remote upstreams are unaffected.
+
+    Returns:
+        List of LocalServer; empty list when nothing is running locally.
     """
     return _scan(host=host, ports=list(ports) if ports else None, timeout=timeout)
 
 
 @dataclass
 class UpstreamAdded:
-    """一次 add_upstream 的回执。"""
+    """Receipt of one add_upstream call / 一次 add_upstream 的回执。"""
 
     label: str
     base_url: str
     models: list[str]
     pool_file: str
 
-    def __str__(self) -> str:  # pragma: no cover - 打印友好
-        return f"上游 [{self.label}] {self.base_url}  模型 {self.models or '(全部)'}"
+    def __str__(self) -> str:  # pragma: no cover - print friendly
+        return f"upstream [{self.label}] {self.base_url}  models {self.models or '(all)'}"
 
 
 @dataclass
 class TokenIssued:
-    """一次 create_token 的回执。plaintext 只在发放时出现这一次，务必保存。"""
+    """Receipt of one create_token call / 一次 create_token 的回执。
+
+    plaintext is shown exactly once at issue time — save it immediately.
+    plaintext 只在发放时出现这一次，务必立即保存。
+    """
 
     name: str
     plaintext: str
@@ -97,26 +113,26 @@ class TokenIssued:
     tokens_file: str
 
     def __str__(self) -> str:  # pragma: no cover
-        return f"令牌 [{self.name}] {self.plaintext[:12]}…（只显示这一次）"
+        return f"token [{self.name}] {self.plaintext[:12]}…（shown once）"
 
 
 # --------------------------------------------------------------------------
-# Station：一座中转站
+# Station: one relay station / 一座中转站
 # --------------------------------------------------------------------------
 
 
 class Station:
-    """一座中转站 = 一个号池文件 + 一个令牌文件 + 一个端口。
+    """One relay station = a key pool file + a token file + a port.
 
-    参数::
-
-        port        监听端口（默认 8799）
-        host        绑定地址；默认 127.0.0.1（仅本机）。要给局域网/公网用
-                    传 "0.0.0.0"，且必须配 master_key 或至少一枚令牌（安全闸）
-        master_key  管理员直连密钥（客户端 Authorization 直接用它）
-        name        实例名（局域网发现与管理面展示用）
-        home        数据目录；默认 ~/.local/share/relay-hub-<port>/
-                    号池 pool.json、令牌 tokens.json 都放在这里，与 CLI 格式互通
+    Args:
+        port: listen port (default 8799).
+        host: bind address; default ``127.0.0.1`` (local only). Use ``"0.0.0.0"``
+            for LAN/public — then a master_key or at least one token is REQUIRED
+            (safety gate, same as the CLI).
+        master_key: admin direct-connect key clients use as Bearer credential.
+        name: instance name (LAN discovery & admin console display).
+        home: data directory; default ``~/.local/share/relay-hub-<port>/``.
+            pool.json / tokens.json live here, same format as the CLI.
     """
 
     def __init__(
@@ -138,12 +154,11 @@ class Station:
         self.tokens_file = base / "tokens.json"
         self._server: RelayServer | None = None
         self._thread: threading.Thread | None = None
-        # 首次访问惰性建文件，避免空目录残留
-        self._pool()  # noqa: 触发建文件
+        self._pool()  # create files on first touch / 首次访问即建文件
         if not self.tokens_file.exists():
             TokenPool.load(self.tokens_file).save(self.tokens_file)
 
-    # -- 内部 ------------------------------------------------------------
+    # -- internal / 内部 ---------------------------------------------------
 
     def _pool(self) -> KeyPool:
         pool = KeyPool.load(self.pool_file)
@@ -160,11 +175,13 @@ class Station:
             p = protocol.lower()
             if p in (PROTOCOL_ANTHROPIC, PROTOCOL_OPENAI_CHAT):
                 return p
-            raise ValueError(f"protocol 只支持 '{PROTOCOL_ANTHROPIC}' 或 '{PROTOCOL_OPENAI_CHAT}'，收到 {protocol!r}")
-        # 猜测：anthropic 字样优先，其余（OpenAI 兼容网/本地推理）走 openai-chat
+            raise ValueError(
+                f"protocol must be '{PROTOCOL_ANTHROPIC}' or '{PROTOCOL_OPENAI_CHAT}', got {protocol!r}"
+            )
+        # guess: anthropic in URL → Anthropic protocol; otherwise OpenAI-compatible
         return PROTOCOL_ANTHROPIC if "anthropic" in base_url.lower() else PROTOCOL_OPENAI_CHAT
 
-    # -- 上游 ------------------------------------------------------------
+    # -- upstreams / 上游 ----------------------------------------------------
 
     def add_upstream(
         self,
@@ -177,18 +194,21 @@ class Station:
         weight: int = 1,
         note: str = "",
     ) -> UpstreamAdded:
-        """添加一个上游渠道（远程 API Key 或自托管推理服务）。
+        """Add an upstream channel (remote API key or self-hosted server).
 
-        参数::
+        Args:
+            base_url: upstream address, e.g. ``https://api.example.com/v1`` or
+                ``http://127.0.0.1:11434`` (Ollama).
+            api_key: upstream secret (``sk-…``). Leave empty for unauthenticated
+                local servers.
+            models: model names this channel serves; empty = no restriction.
+            protocol: ``"anthropic-messages"`` | ``"openai-chat"``; auto-guessed
+                when omitted (URL contains "anthropic" → Anthropic).
+            label: channel alias (auto-generated when omitted).
+            priority: higher = preferred; used for primary/backup semantics.
+            weight: load-balancing weight within the same priority.
 
-            base_url  上游地址，如 https://api.example.com/v1 或 http://127.0.0.1:11434
-            api_key   上游密钥（sk-…）。本地 Ollama 等无需鉴权的服务可留空
-            models    该渠道可用的模型名；留空 = 不限制（透传任何模型名）
-            protocol  "anthropic-messages" | "openai-chat"；不传自动猜
-                      （URL 含 anthropic → Anthropic 协议，否则 OpenAI 协议）
-            label     渠道别名（默认自动生成）
-            priority  主备优先级：数字越大越优先，主渠道全冷却后才落备
-            weight    同优先级内的负载权重
+        添加一个上游渠道。protocol 不传自动猜；priority 大者优先（主备语义）。
         """
         pool = self._pool()
         lab = (label or "").strip() or f"up-{len(pool.keys) + 1}"
@@ -213,7 +233,10 @@ class Station:
         )
 
     def scan_and_import(self, host: str = "127.0.0.1") -> list[UpstreamAdded]:
-        """扫描本机推理服务并把扫到的一键入池（幂等：重复执行只刷新）。"""
+        """Scan local inference servers and import what was found (idempotent).
+
+        扫描本机推理服务并一键入池；幂等：重复执行只刷新，不产生重复渠道。
+        """
         servers = _scan(host=host)
         if not servers:
             return []
@@ -229,7 +252,7 @@ class Station:
         ]
 
     def list_upstreams(self) -> list[dict[str, Any]]:
-        """当前号池里的所有上游（label/地址/模型/启用状态/用量）。"""
+        """All upstreams with status & usage / 当前所有上游（含启用状态与用量）。"""
         return [
             {
                 "label": k.label,
@@ -246,7 +269,10 @@ class Station:
         ]
 
     def remove_upstream(self, label: str) -> bool:
-        """按别名移除一个上游；返回是否真的删了。"""
+        """Remove an upstream by label; returns True when actually removed.
+
+        按别名移除一个上游；返回是否真的删了。
+        """
         pool = self._pool()
         target = pool.find_by_label(label)
         if target is None:
@@ -255,7 +281,20 @@ class Station:
         self._save_pool(pool)
         return True
 
-    # -- 下游令牌 ---------------------------------------------------------
+    def set_upstream_enabled(self, label: str, enabled: bool = True) -> bool:
+        """Enable/disable an upstream without deleting it (backup / maintenance).
+
+        启停一个上游（不删除）。返回是否找到并修改了该渠道。
+        """
+        pool = self._pool()
+        target = pool.find_by_label(label)
+        if target is None:
+            return False
+        pool.set_enabled(target.key_id, enabled)
+        self._save_pool(pool)
+        return True
+
+    # -- downstream tokens / 下游令牌 ---------------------------------------
 
     def create_token(
         self,
@@ -266,22 +305,22 @@ class Station:
         expires_days: float = 0,
         scope: str = SCOPE_NORMAL,
     ) -> TokenIssued:
-        """发放一枚下游令牌（给手机/平板/第三方设备用的钥匙）。
+        """Issue a downstream token (the key you hand to devices/third parties).
 
-        参数::
+        Args:
+            name: device/purpose name (shows in the admin console).
+            models: model whitelist; empty = all models allowed.
+            rpm: requests-per-minute cap; 0 = unlimited.
+            daily_requests: per-calendar-day cap; 0 = unlimited.
+            expires_days: validity in days; 0 = never expires.
+            scope: ``"normal"`` (real routing) | ``"test"`` (synthetic replies,
+                never touches real upstreams — safe to hand out for benchmarks).
 
-            name           设备/用途名（管理面按它区分）
-            models         允许的模型白名单；空 = 不限
-            rpm            每分钟请求上限；0 = 不限
-            daily_requests 每日请求上限；0 = 不限
-            expires_days   有效天数；0 = 永不过期
-            scope          "normal"（正常）| "test"（合成应答，发第三方试水用）
-
-        返回的 TokenIssued.plaintext 是明文令牌，**只在发放这一次可见**，
-        落盘的是 SHA-256 哈希。丢了就 create_token 重发一枚。
+        发放一枚下游令牌。返回的 plaintext **只在这一次可见**，落盘的是
+        SHA-256 哈希；丢了就重新 create_token 一枚。
         """
         if scope not in (SCOPE_NORMAL, SCOPE_TEST):
-            raise ValueError("scope 只能是 'normal' 或 'test'")
+            raise ValueError("scope must be 'normal' or 'test'")
         plain = generate_token()
         token = DownstreamToken(
             token_id=str(uuid.uuid4()),
@@ -291,7 +330,7 @@ class Station:
             scope=scope,
             rpm=int(rpm),
             daily_requests=int(daily_requests),
-            expires_at=(expires_days * 86400 + __import__("time").time()) if expires_days else 0,
+            expires_at=(expires_days * 86400 + time.time()) if expires_days else 0,
         )
         pool = TokenPool.load(self.tokens_file)
         pool.add(token)
@@ -306,7 +345,10 @@ class Station:
         )
 
     def list_tokens(self) -> list[dict[str, Any]]:
-        """当前所有下游令牌（不含明文——明文只在发放时出现过）。"""
+        """All downstream tokens (no plaintext — it is only shown once at issue).
+
+        当前所有下游令牌（不含明文——明文只在发放时出现过一次）。
+        """
         pool = TokenPool.load(self.tokens_file)
         return [
             {
@@ -322,23 +364,81 @@ class Station:
             for t in pool.tokens
         ]
 
-    # -- 起站 / 停站 ------------------------------------------------------
+    def remove_token(self, name: str) -> bool:
+        """Revoke a token by its name (the device loses access immediately).
 
-    def serve(self, background: bool = False, discover: bool = False, verbose: bool = False) -> str:
-        """启动中转站。
+        按设备名吊销一枚令牌；设备即刻失去访问权。返回是否真的删了。
+        """
+        pool = TokenPool.load(self.tokens_file)
+        target = pool.find_by_name(name)
+        if target is None:
+            return False
+        pool.remove(target.token_id)
+        pool.save(self.tokens_file)
+        return True
 
-        background=False（默认）：阻塞当前线程直到 Ctrl+C——脚本/Notebook 里
-        请用 background=True。
+    def set_token_enabled(self, name: str, enabled: bool = True) -> bool:
+        """Temporarily enable/disable a token without revoking it.
 
-        background=True：起在守护线程里，立即返回 base_url；用 .stop() 停。
+        临时停用/恢复一枚令牌（不删除，随时可恢复）。返回是否找到并修改。
+        """
+        pool = TokenPool.load(self.tokens_file)
+        target = pool.find_by_name(name)
+        if target is None:
+            return False
+        pool.set_enabled(target.token_id, enabled)
+        pool.save(self.tokens_file)
+        return True
 
-        discover=True：同时开启局域网 UDP 发现（支持本协议的客户端可"扫到即连"）。
+    def usage(self) -> dict[str, Any]:
+        """Aggregate usage snapshot (upstreams + tokens) for dashboards.
+
+        聚合用量快照（上游渠道 + 下游令牌），可直接喂给监控面板。
+        """
+        pool = self._pool()
+        tp = TokenPool.load(self.tokens_file)
+        up = {
+            "channels": len(pool.keys),
+            "enabled": sum(1 for k in pool.keys if k.enabled),
+            "requests": sum(k.usage.requests for k in pool.keys),
+            "ok": sum(k.usage.ok for k in pool.keys),
+            "failed": sum(k.usage.failed for k in pool.keys),
+            "tokens_in": sum(k.usage.tokens_in for k in pool.keys),
+            "tokens_out": sum(k.usage.tokens_out for k in pool.keys),
+        }
+        down = {
+            "tokens": len(tp.tokens),
+            "enabled": sum(1 for t in tp.tokens if t.enabled and not t.is_expired()),
+            "requests": sum(t.usage.requests for t in tp.tokens),
+        }
+        return {"upstream": up, "downstream": down}
+
+    # -- serve / stop: 起站与停站 --------------------------------------------
+
+    def serve(
+        self,
+        background: bool = False,
+        discover: bool = False,
+        verbose: bool = False,
+    ) -> str:
+        """Start serving.
+
+        Args:
+            background: False (default) blocks until Ctrl+C — use True inside
+                scripts/notebooks, then call :meth:`stop`.
+            discover: also answer LAN UDP discovery broadcasts (clients can
+                "scan & connect" with zero input).
+            verbose: log each request line to stdout.
+
+        启动中转站。background=False 阻塞到 Ctrl+C；脚本里传 background=True
+        再用 stop() 停。discover=True 同时开启局域网 UDP 发现（支持本协议的
+        客户端可"扫到即连"）。
         """
         if self._server is not None:
             return self.base_url
         router = KeyPoolRouter(self._pool(), persist_path=self.pool_file)
         token_store = TokenStore(self.tokens_file)
-        from .gateway import pairing as pairing_module  # 局部导入避免环
+        from .gateway import pairing as pairing_module  # local import to avoid cycles
 
         pairing = pairing_module.PairingService(
             tokens=token_store, path=self.home / "pairing.json"
@@ -380,10 +480,14 @@ class Station:
 
     @property
     def base_url(self) -> str:
+        """Base URL of this station (0.0.0.0 reported as 127.0.0.1)."""
         return f"http://{self.host}:{self.port}".replace("0.0.0.0", "127.0.0.1")
 
     def stop(self) -> None:
-        """停止后台模式起的服务（阻塞模式 Ctrl+C 会自动调它）。"""
+        """Stop a background-started server (blocking mode stops via Ctrl+C).
+
+        停止后台模式起的服务；阻塞模式 Ctrl+C 会自动调用它。
+        """
         if self._server is not None:
             self._server.shutdown()
             self._server.server_close()
@@ -399,7 +503,7 @@ class Station:
 
 
 # --------------------------------------------------------------------------
-# 一行快开
+# One-liner / 一行快开
 # --------------------------------------------------------------------------
 
 
@@ -411,12 +515,14 @@ def quickstart(
     master_key: str = "rh_local_dev",
     background: bool = True,
 ) -> tuple[Station, str]:
-    """最快路径：一行把「一个上游」变成「一个站」。
+    """Fastest path: turn ONE upstream into ONE station in a single call.
 
     ::
 
         st, url = hubrelay.quickstart("http://127.0.0.1:11434", models=["qwen2.5"])
-        print(url, st.create_token("手机") )   # 立刻能接客户端
+        print(url, st.create_token("phone"))   # immediately client-ready
+
+    一行把「一个上游」变成「一个站」，返回 (Station, base_url)。
     """
     st = Station(port=port, master_key=master_key)
     st.add_upstream(base_url=base_url, api_key=api_key, models=models)

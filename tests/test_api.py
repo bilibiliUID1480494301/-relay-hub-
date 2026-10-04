@@ -169,3 +169,30 @@ def test_top_level_shim():
 
     assert hubrelay.Station is relayhub.api.Station
     assert hubrelay.__version__ == relayhub.__version__ or True
+
+
+def test_lifecycle_methods(tmp_path):
+    """v0.2.4 新增：启停/吊销/用量聚合。"""
+    st = api.Station(port=_free_port(), home=tmp_path / "s3")
+    st.add_upstream("http://10.0.0.9:9999", api_key="sk-x", models=["m"], label="chan-a")
+    st.create_token("phone")
+    st.create_token("pad")
+
+    # 令牌：停用→列表可见 enabled=False→恢复→吊销
+    assert st.set_token_enabled("phone", False) is True
+    assert [t for t in st.list_tokens() if t["name"] == "phone"][0]["enabled"] is False
+    assert st.set_token_enabled("phone", True) is True
+    assert st.remove_token("pad") is True
+    assert st.remove_token("pad") is False  # 幂等
+    assert [t["name"] for t in st.list_tokens()] == ["phone"]
+
+    # 上游：停用→恢复→移除
+    assert st.set_upstream_enabled("chan-a", False) is True
+    assert st.list_upstreams()[0]["enabled"] is False
+    assert st.set_upstream_enabled("chan-a", True) is True
+    assert st.remove_upstream("chan-a") is True
+    assert st.remove_upstream("chan-a") is False
+
+    # 用量聚合
+    u = st.usage()
+    assert u["upstream"]["channels"] == 0 and u["downstream"]["tokens"] == 1

@@ -100,6 +100,30 @@ st, url = hubrelay.quickstart("http://127.0.0.1:11434", models=["qwen2.5"])
 所有方法都有中文 docstring；号池/令牌文件与 CLI 完全互通（`Station(home=...)` 对应
 CLI 的 `--pool/--tokens` 文件）。令牌明文只显示一次，落盘为 SHA-256 哈希。
 
+## Python API (English)
+
+```python
+import hubrelay
+
+st = hubrelay.Station(port=8799, master_key="rh_master")  # loopback-only by default
+print(hubrelay.scan_local())     # find Ollama / LM Studio / vLLM / llama.cpp locally
+st.scan_and_import()             # import discovered servers into the key pool
+
+st.add_upstream(base_url="https://api.example.com/v1",
+                api_key="sk-xxx", models=["gpt-4o", "gpt-4o-mini"])  # protocol auto-guessed
+
+token = st.create_token("my-phone", rpm=60)  # plaintext shown exactly ONCE (SHA-256 on disk)
+st.set_token_enabled("my-phone", False)      # pause without revoking; remove_token() to revoke
+st.set_upstream_enabled("up-1", False)       # take a channel offline for maintenance
+print(st.usage())                            # aggregated usage snapshot
+
+url = st.serve(background=True)  # non-blocking; st.stop() to shut down
+```
+
+One-liner: `st, url = hubrelay.quickstart("http://127.0.0.1:11434", models=["qwen2.5"])`.
+Every method carries bilingual (EN/中文) docstrings; pool & token files are fully
+interchangeable with the CLI.
+
 ## 运行环境 Requirements
 
 - Python 3.10+（仅标准库）

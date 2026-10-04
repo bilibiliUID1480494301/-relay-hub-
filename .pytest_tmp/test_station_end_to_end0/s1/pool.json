@@ -11,9 +11,9 @@
   "config_epoch": 0,
   "keys": [
     {
-      "key_id": "925d4f44-2526-4297-baff-a78381dac19a",
+      "key_id": "cafd8cb2-9bbc-4923-91cd-178b632c2e7c",
       "label": "fake",
-      "base_url": "http://127.0.0.1:56612/v1",
+      "base_url": "http://127.0.0.1:60031/v1",
       "api_key": "sk-fake-key",
       "protocol": "openai-chat",
       "models": [
