@@ -1,0 +1,2 @@
+{"ts": 1791118439.285, "token": "app-a", "dialect": "", "model": "glm-5.2", "channel": "ch", "ok": true, "stream": false, "status": 0, "tokens_in": 10, "tokens_out": 4, "latency_ms": 12.3}
+{"ts": 1791118439.287, "token": "app-a", "dialect": "", "model": "glm-5.2", "channel": "ch", "ok": false, "stream": false, "status": 404, "tokens_in": 0, "tokens_out": 0, "latency_ms": 0.0, "reason": "unknown model"}

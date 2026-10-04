@@ -1,0 +1,3 @@
+{"ts": 1791118423.663, "event": "pair.begin", "client_id": "app", "ttl": 300.0}
+{"ts": 1791118423.663, "event": "pair.reject", "reason": "配对码不正确（剩余 4 次尝试）"}
+{"ts": 1791118423.663, "event": "pair.reject", "reason": "配对码已过期，请在网关重新执行 `pair begin`"}

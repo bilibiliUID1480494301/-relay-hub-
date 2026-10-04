@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "window_id": "8e756307-f695-4558-abaf-67ed0177f26e",
+  "code": "295312",
+  "client_id": "app",
+  "expires_at": 1300.0,
+  "attempts": 1,
+  "max_attempts": 5
+}

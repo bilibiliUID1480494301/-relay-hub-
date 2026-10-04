@@ -1,0 +1,2 @@
+{"ts": 1791118439.857, "token": "app-a", "dialect": "anthropic", "model": "nope", "channel": "", "ok": false, "stream": false, "status": 404, "tokens_in": 0, "tokens_out": 0, "latency_ms": 0.0, "req_id": "d34f7445365042679e6c489bb01d621c", "ip": "127.0.0.1", "reason": "unknown model"}
+{"ts": 1791118439.874, "token": "master", "dialect": "anthropic", "model": "", "channel": "", "ok": false, "stream": false, "status": 401, "tokens_in": 0, "tokens_out": 0, "latency_ms": 0.0, "req_id": "c3aa853ce1e546a2b91aafb29b9bdbd2", "ip": "127.0.0.1", "reason": "unauthorized"}

@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "strategy": "round_robin",
+  "failure_threshold": 3,
+  "cooldown_tiers": {
+    "plan": 43200.0,
+    "soft": 60.0,
+    "err": 600.0
+  },
+  "retries": 1,
+  "config_epoch": 0,
+  "keys": [
+    {
+      "key_id": "e7a0c04f-9a63-471a-bb24-bfb1da35d0bf",
+      "label": "dead",
+      "base_url": "http://127.0.0.1:63007",
+      "api_key": "up_key",
+      "protocol": "anthropic-messages",
+      "models": [
+        "glm-5.2"
+      ],
+      "model_windows": {
+        "glm-5.2": 1000000
+      },
+      "model_mapping": {},
+      "priority": 0,
+      "weight": 1,
+      "enabled": true,
+      "note": "",
+      "auth_mode": "auto",
+      "extra_headers": {},
+      "credits": -1,
+      "credits_updated_at": 0.0,
+      "cooldown_tier": "",
+      "consecutive_failures": 2,
+      "disabled_until": 0.0,
+      "last_error": "HTTP 503: {\"error\": \"upstream is down\"}",
+      "usage": {
+        "requests": 2,
+        "ok": 0,
+        "failed": 2,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "cache_read": 0,
+        "cache_creation": 0
+      }
+    },
+    {
+      "key_id": "92dd3dd3-a509-4841-875c-2944a23c3572",
+      "label": "alive",
+      "base_url": "http://127.0.0.1:63008",
+      "api_key": "up_key",
+      "protocol": "openai-chat",
+      "models": [
+        "glm-5.2"
+      ],
+      "model_windows": {
+        "glm-5.2": 1000000
+      },
+      "model_mapping": {},
+      "priority": 0,
+      "weight": 1,
+      "enabled": true,
+      "note": "",
+      "auth_mode": "auto",
+      "extra_headers": {},
+      "credits": -1,
+      "credits_updated_at": 0.0,
+      "cooldown_tier": "",
+      "consecutive_failures": 0,
+      "disabled_until": 0.0,
+      "last_error": "",
+      "usage": {
+        "requests": 1,
+        "ok": 1,
+        "failed": 0,
+        "tokens_in": 7,
+        "tokens_out": 5,
+        "cache_read": 0,
+        "cache_creation": 0
+      }
+    }
+  ]
+}

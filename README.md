@@ -13,6 +13,23 @@ standard library — no third-party runtime dependencies.
 OpenAI/Anthropic 兼容入口，带号池调度、下游令牌、用量记账、分级熔断和一致性探测。
 纯 Python 标准库实现，零第三方运行时依赖。
 
+## Features (English)
+
+- **Upstream key pool**: multi-channel round-robin / least-failure / credit-aware
+  scheduling; priority & weight (primary/backup); four-tier cooldown (quota /
+  rate-limit / 5xx / auth-failure); hot reload.
+- **Downstream tokens**: per-device tokens (one-api style) with model whitelist,
+  RPM/daily limits, usage accounting; plaintext shown once, SHA-256 at rest.
+- **Dual protocol**: `POST /v1/messages` (Anthropic) and `POST /v1/chat/completions`
+  (OpenAI) behind the same credential.
+- **Pairing**: out-of-band pairing codes (single-use, expiring) + optional LAN
+  zero-input pairing.
+- **Admin console**: local web UI for channels / tokens / policies / request log /
+  usage / audit — with an EN/中文 toggle in the header.
+- **Conformance probe**: run compliance probes against any compatible gateway.
+- **Loop protection, response cache, pre-consume billing, concurrency queue,
+  local inference scan** — see the Chinese section below for details.
+
 ## 功能 Features
 
 - **上游号池** Upstream key pool：多渠道轮询/最少失败/额度感知调度，优先级与权重，
@@ -123,6 +140,22 @@ url = st.serve(background=True)  # non-blocking; st.stop() to shut down
 One-liner: `st, url = hubrelay.quickstart("http://127.0.0.1:11434", models=["qwen2.5"])`.
 Every method carries bilingual (EN/中文) docstrings; pool & token files are fully
 interchangeable with the CLI.
+
+## Troubleshooting 常见问题
+
+- **Windows 首次起站弹防火墙提示 / 局域网设备连不上？**
+  Windows Defender 首次会拦截监听端口：弹窗时点「允许访问」；如果已点过取消，
+  到「Windows 安全中心 → 防火墙 → 允许应用通过防火墙」里勾选 Python 的专用/公用网络。
+  只开 `--discover`（UDP 8795）时也会触发一次弹窗。
+  / Windows Firewall prompts on first listen — click "Allow access"; re-enable
+  later under Windows Security → Firewall → Allow an app through firewall.
+- **手机连不上 `http://192.168.x.x:8799`？** 默认只绑回环（本机）。给局域网用要
+  `serve --host 0.0.0.0 --public`（必须已配 master key 或下游令牌——安全闸），
+  Python API 里则 `Station(host="0.0.0.0")`。
+- **客户端拉不到模型列表？** 号池里没有任何 Key 声明模型（`pool add --model` 或
+  `scan_and_import()`），或该下游令牌的模型白名单没包含它。
+- **装了 hubrelay 但 `import hubrelay` 报错？** 请升级到 ≥ 0.2.3
+  （`pip install -U hubrelay`）；0.2.1/0.2.2 是坏版本。
 
 ## 运行环境 Requirements
 

@@ -1,0 +1,8 @@
+{"ts": 1791118423.649, "event": "pair.begin", "client_id": "app", "ttl": 300.0}
+{"ts": 1791118423.649, "event": "pair.reject", "reason": "配对码不正确（剩余 4 次尝试）"}
+{"ts": 1791118423.649, "event": "pair.reject", "reason": "配对码不正确（剩余 3 次尝试）"}
+{"ts": 1791118423.653, "event": "pair.reject", "reason": "配对码不正确（剩余 2 次尝试）"}
+{"ts": 1791118423.653, "event": "pair.reject", "reason": "配对码不正确（剩余 1 次尝试）"}
+{"ts": 1791118423.653, "event": "pair.reject", "reason": "配对码不正确（剩余 0 次尝试）"}
+{"ts": 1791118423.655, "event": "pair.reject", "reason": "尝试次数已用尽，请在网关重新执行 `pair begin`"}
+{"ts": 1791118423.656, "event": "pair.reject", "reason": "尝试次数已用尽，请在网关重新执行 `pair begin`"}

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "strategy": "round_robin",
+  "failure_threshold": 3,
+  "cooldown_tiers": {
+    "plan": 43200.0,
+    "soft": 60.0,
+    "err": 600.0
+  },
+  "retries": 1,
+  "config_epoch": 0,
+  "keys": [
+    {
+      "key_id": "c21b2c6c-ec6e-40ba-9d0a-70263886caf8",
+      "label": "local-ollama",
+      "base_url": "http://127.0.0.1:11434",
+      "api_key": "",
+      "protocol": "openai-chat",
+      "models": [
+        "llama4:8b"
+      ],
+      "model_windows": {},
+      "model_mapping": {},
+      "priority": 0,
+      "weight": 1,
+      "enabled": true,
+      "note": "自动扫描（ollama）",
+      "auth_mode": "auto",
+      "extra_headers": {},
+      "credits": -1,
+      "credits_updated_at": 0.0,
+      "cooldown_tier": "",
+      "consecutive_failures": 0,
+      "disabled_until": 0.0,
+      "last_error": "",
+      "usage": {
+        "requests": 0,
+        "ok": 0,
+        "failed": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "cache_read": 0,
+        "cache_creation": 0
+      }
+    }
+  ]
+}

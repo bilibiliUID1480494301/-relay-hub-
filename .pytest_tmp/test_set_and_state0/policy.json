@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "ips": {
+    "1.2.3.4": {
+      "blocked": true,
+      "priority": false,
+      "note": "刷请求"
+    }
+  },
+  "devices": {
+    "did-abc": {
+      "blocked": false,
+      "priority": true,
+      "note": ""
+    }
+  }
+}

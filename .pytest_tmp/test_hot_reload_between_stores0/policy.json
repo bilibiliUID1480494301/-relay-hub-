@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "ips": {},
+  "devices": {
+    "did-x": {
+      "blocked": true,
+      "priority": false,
+      "note": ""
+    }
+  }
+}

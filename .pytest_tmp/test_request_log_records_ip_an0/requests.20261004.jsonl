@@ -1,0 +1,1 @@
+{"ts": 1791118418.705, "token": "master", "dialect": "anthropic", "model": "glm-5.2", "channel": "secondary", "ok": true, "stream": false, "status": 200, "tokens_in": 12, "tokens_out": 8, "latency_ms": 0.0, "req_id": "e0b730474b8d4ee1add6f45863b9d15b", "ip": "127.0.0.1"}

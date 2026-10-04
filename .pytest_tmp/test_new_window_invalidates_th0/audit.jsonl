@@ -1,0 +1,4 @@
+{"ts": 1791118423.356, "event": "pair.begin", "client_id": "app", "ttl": 300.0}
+{"ts": 1791118423.357, "event": "pair.begin", "client_id": "app", "ttl": 300.0}
+{"ts": 1791118423.358, "event": "pair.reject", "reason": "配对码不正确（剩余 4 次尝试）"}
+{"ts": 1791118423.639, "event": "pair.success", "device": "laptop", "client_id": "app", "token_hint": "…c8bd"}

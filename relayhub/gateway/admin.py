@@ -67,11 +67,11 @@ LOGIN_HTML = """<!doctype html>
  .err{color:#f87171;min-height:1.2em;font-size:.85rem}
 </style></head><body>
 <form onsubmit="return doLogin()">
- <h1>relay-hub 号池管理</h1>
- <label>管理面 token</label>
+ <h1>relay-hub 号池管理 · Key Pool Admin</h1>
+ <label>管理面 token / Admin token</label>
  <input id="token" type="password" autofocus>
  <div class="err" id="err"></div>
- <button type="submit">登录</button>
+ <button type="submit">登录 / Sign in</button>
 </form>
 <script>
 async function doLogin(){
@@ -2201,6 +2201,78 @@ setInterval(function(){
   if(document.getElementById('auto').checked&&!document.hidden){refreshActive();}
 },4000);
 switchTab('clients');
+</script>
+
+<script>
+/* Client-side EN/中文 toggle: swaps text nodes only; scripts/styles untouched. */
+(function(){
+  var DICT = {
+    "中转站控制台":"Relay Station Console","自动刷新":"Auto refresh","刷新":"Refresh",
+    "客户端":"Clients","渠道":"Channels","下游令牌":"Tokens","接入策略":"Access Policy",
+    "用户":"Users","请求":"Requests","用量":"Usage","审计":"Audit",
+    "接入客户端":"Connected Clients","添加渠道":"Add Channel","添加用户":"Add User",
+    "调度与熔断":"Scheduling & Circuit Breaker","调度策略":"Scheduling Policy",
+    "模型":"Model","模型映射":"Model Mapping","模型限制":"Model Whitelist",
+    "协议":"Protocol","上游协议":"Upstream Protocol","上游 Key":"Upstream Key",
+    "名称":"Name","备注":"Note","状态":"Status","版本":"Version","启用":"Enabled",
+    "禁用":"Disable","移除":"Remove","编辑":"Edit","删除":"Delete","保存":"Save",
+    "取消编辑":"Cancel","创建":"Create","生成":"Generate","生成数量":"Count",
+    "优先级":"Priority","权重":"Weight","分组":"Group","分组倍率":"Group Multiplier",
+    "作用域":"Scope","限额":"Quota","日配额":"Daily Quota","有效期(天)":"Expires (days)",
+    "发放":"Issue","发放下游令牌":"Issue Token","吊销":"Revoke","兑换码":"Redeem Codes",
+    "面额":"Face Value","每张面额":"Per-code Value","初始额度":"Initial Credit",
+    "发额度":"Grant Credit","注册送额度":"Signup Bonus","开放注册":"Open Registration",
+    "计费规则":"Billing Rules","保存规则":"Save Rules","输入 价/1k tokens":"Input ¥/1k tok",
+    "输出 价/1k tokens":"Output ¥/1k tok","分组筛选：":"Group filter:",
+    "全部":"All","全部分组":"All groups","全部模型":"All models","不限":"Unlimited",
+    "不限制":"Unlimited","可用":"Available","密码":"Password","用户名":"Username",
+    "管理员":"Admin","设备":"Device","设备 ID":"Device ID","设备名":"Device Name",
+    "设备策略":"Device Policy","设备（ID / 令牌名）":"Device (ID / Token name)",
+    "设备策略":"Device Policies","没有设备策略。":"No device policies.",
+    "没有 IP 策略。":"No IP policies.","拉黑":"Blacklist","已拉黑":"Blacklisted",
+    "已禁用":"Disabled","已禁用(鉴权失效)":"Disabled (auth failed)",
+    "优先队列":"Priority Queue","接入策略（拉黑 / 优先队列）":"Access Policy (Blacklist / Priority Queue)",
+    "复位熔断":"Reset Breaker","连续失败阈值":"Failure Threshold","窗口":"Window",
+    "探活":"Health Probe","来源":"Source","客户端用户":"Client User","客户端身份":"Client Identity",
+    "无客户端身份":"No client identity","直连 API":"Direct API",
+    "直连 API，无客户端身份":"Direct API, no client identity",
+    "用户 / 令牌":"User / Token","最近来源（客户端身份）":"Recent Sources",
+    "最近 IP":"Recent IPs","最近活跃":"Last Active","在线":"Online",
+    "事件":"Event","时间":"Time","动作":"Action","结果":"Result","详情":"Detail",
+    "耗时":"Latency","条数":"Rows","查询":"Query","按日":"By day","按模型":"By model",
+    "按渠道":"By channel","按令牌":"By token","按分组":"By group",
+    "请求明细":"Request Log","用量统计":"Usage Stats","操作审计":"Audit Log",
+    "今日请求":"Requests Today","令牌":"Token","有效":"Valid","类型":"Type",
+    "额度/已用":"Credit/Used","累计（失败）":"Total (failed)","流":"Stream",
+    "关闭":"Close","值":"Value","新令牌明文（只显示这一次）：":"New token plaintext (shown ONCE):",
+    "还没有令牌，用上面的表单发放。":"No tokens yet — issue one with the form above.",
+    "还没有渠道，用上面的表单加一个。":"No channels yet — add one with the form above.",
+    "还没有用户。":"No users yet.","还没有兑换码。":"No redeem codes yet.",
+    "还没有任何请求流量。":"No request traffic yet.",
+    "常用模型":"Common models","应用":"App","开放":"Open","归因":"Attribution",
+    "无动作":"None","连续失败":"Consecutive failures","模型窗口":"Model windows"
+  };
+  var en = false, btn;
+  function walk(node){
+    if (node.nodeType === 3) {
+      var t = node.textContent.trim();
+      if (DICT[t] !== undefined) {
+        if (node.__zh === undefined) node.__zh = node.textContent;
+        node.textContent = en ? DICT[t] : node.__zh;
+      }
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    var tag = node.nodeName;
+    if (tag === 'SCRIPT' || tag === 'STYLE') return;
+    for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
+  }
+  btn = document.createElement('button');
+  btn.className = 'ghost'; btn.textContent = 'EN'; btn.style.minWidth = 'auto';
+  btn.onclick = function(){ en = !en; btn.textContent = en ? '中文' : 'EN'; walk(document.body); };
+  var h = document.querySelector('header');
+  if (h) h.appendChild(btn);
+})();
 </script>
 </body>
 </html>

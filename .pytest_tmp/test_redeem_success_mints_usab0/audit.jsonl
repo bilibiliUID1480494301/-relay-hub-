@@ -1,0 +1,3 @@
+{"ts": 1791118423.679, "event": "pair.begin", "client_id": "app", "ttl": 300.0}
+{"ts": 1791118423.934, "event": "pair.success", "device": "my laptop", "client_id": "app", "token_hint": "…7ec3"}
+{"ts": 1791118423.937, "event": "pair.reject", "reason": "没有开启中的配对窗口"}

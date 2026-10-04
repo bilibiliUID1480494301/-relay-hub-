@@ -1,0 +1,3 @@
+{"ts": 1791118424.223, "event": "pair.begin", "client_id": "app", "ttl": 300.0}
+{"ts": 1791118424.223, "event": "pair.reject", "reason": "配对码不正确（剩余 4 次尝试）"}
+{"ts": 1791118424.483, "event": "pair.success", "device": "laptop", "client_id": "app", "token_hint": "…0698"}

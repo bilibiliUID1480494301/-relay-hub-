@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "allow_register": true,
+  "default_quota": 1000,
+  "price_in_per_1k": 2.0,
+  "price_out_per_1k": 6.0,
+  "groups": {
+    "default": 1.0
+  },
+  "users": [
+    {
+      "user_id": "5a518acb-942f-4309-b84f-447b8cb3e68a",
+      "username": "eve",
+      "password_hash": "pbkdf2$100000$70cb36bf85a0388a8fb8e186fbff61d6$0f2663fa51f88360076868f2d62f332bae00dd6cc00ea6d2dfa3329fb8942d8b",
+      "role": "user",
+      "enabled": true,
+      "quota": 1500,
+      "used": 0,
+      "group": "default",
+      "note": "",
+      "created_at": 1791118441.7664433
+    },
+    {
+      "user_id": "359518a2-1a26-4e3c-a48e-f88d6b23236a",
+      "username": "frank",
+      "password_hash": "pbkdf2$100000$815b4c3ab403eb1753a35955543ffa9c$598308a4496025ec3e7d763d3273b64dd2236be413844bf69c290d28f44ee15c",
+      "role": "user",
+      "enabled": true,
+      "quota": 999,
+      "used": 1,
+      "group": "default",
+      "note": "",
+      "created_at": 1791118441.858711
+    }
+  ]
+}

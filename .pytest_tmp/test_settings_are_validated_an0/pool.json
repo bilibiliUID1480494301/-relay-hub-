@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "strategy": "least_failures",
+  "failure_threshold": 5,
+  "cooldown_tiers": {
+    "plan": 43200.0,
+    "soft": 45.0,
+    "err": 900.0
+  },
+  "retries": 1,
+  "config_epoch": 0,
+  "keys": []
+}
