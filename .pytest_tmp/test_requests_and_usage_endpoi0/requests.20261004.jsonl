@@ -1,2 +1,0 @@
-{"ts": 1791121423.137, "token": "app-a", "dialect": "", "model": "glm-5.2", "channel": "local-ollama", "ok": true, "stream": false, "status": 0, "tokens_in": 7, "tokens_out": 3, "latency_ms": 20.0}
-{"ts": 1791121423.137, "token": "app-a", "dialect": "", "model": "glm-5.2", "channel": "local-ollama", "ok": false, "stream": false, "status": 404, "tokens_in": 0, "tokens_out": 0, "latency_ms": 0.0, "reason": "unknown model"}

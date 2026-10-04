@@ -12,8 +12,9 @@ from relayhub.api import (  # noqa: F401
     Station,
     TokenIssued,
     UpstreamAdded,
+    doctor,
     quickstart,
     scan_local,
 )
 
-__version__ = "0.2.6"
+__version__ = "0.2.7"

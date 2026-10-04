@@ -1,0 +1,19 @@
+# 中文：`docker compose up -d` 一条命令起站。
+# English: `docker compose up -d` brings the station up.
+#
+# 首次使用 / first run:
+#   docker compose exec relay hubrelay token add my-phone   # 发下游令牌 / issue a token
+#   curl http://127.0.0.1:8799/v1/models -H "Authorization: Bearer <token>"
+
+services:
+  relay:
+    build: .
+    container_name: hubrelay
+    restart: unless-stopped
+    ports:
+      - "8799:8799"
+    volumes:
+      - ./data:/data        # 号池/令牌/日志持久化 / persist pool, tokens, logs
+    # 环境变量可覆盖数据根 / override data root via env if you prefer:
+    # environment:
+    #   RELAYHUB_HOME: /data

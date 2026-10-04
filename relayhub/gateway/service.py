@@ -1293,6 +1293,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             # 路径等价于不存在（pairing.py 的安全模型）。
             self._handle_pair()
             return
+        if path == "/v1/embeddings":
+            self._handle_embeddings()
+            return
         if path.startswith("/api/auth/") or path.startswith("/api/user/"):
             self._handle_panel_api(path)
             return
@@ -1540,6 +1543,124 @@ class RelayHandler(BaseHTTPRequestHandler):
             if fp:
                 self.loop_guard.release(fp)
 
+
+    def _handle_embeddings(self) -> None:
+        """/v1/embeddings：RAG/文本工具的向量端点（OpenAI 协议形态）。
+
+        中文：复用 chat 的鉴权 / 令牌模型白名单 / 日配额 / RPM 四道闸；
+        非流式、请求体不进缓存与环路指纹（向量请求便宜且无环路拓扑价值）。
+        test 令牌回本地合成向量，绝不触上游——与 chat 的测试密钥语义一致。
+
+        English: /v1/embeddings with the same auth / model-whitelist / quota /
+        RPM gates as chat. Non-streaming; bypasses cache & loop fingerprint.
+        Test tokens get a locally synthesized embedding, never touching upstream.
+        """
+        started = time.monotonic()
+        dialect = "openai"
+        authorized, identity = self._authenticate(dialect)
+        if not authorized:
+            self._log_request(
+                started=started, dialect=dialect, identity=None,
+                ok=False, status=401, reason="unauthorized",
+            )
+            return
+        body = self._read_json(dialect)
+        if body is None:
+            self._log_request(
+                started=started, dialect=dialect, identity=identity,
+                ok=False, status=400, reason="invalid json",
+            )
+            return
+        model = str(body.get("model") or "")
+        if not model:
+            self._error(400, "缺少 model", dialect=dialect)
+            self._log_request(
+                started=started, dialect=dialect, identity=identity,
+                ok=False, status=400, reason="missing model",
+            )
+            return
+        is_test = identity is not None and identity.scope == SCOPE_TEST
+        if identity is not None and not is_test and not identity.allows(model):
+            self._error(
+                403,
+                f"令牌 {identity.name} 无权使用模型 {model}。该令牌可用：{list(identity.models)}",
+                "permission_error",
+                dialect,
+            )
+            self._log_request(
+                started=started, dialect=dialect, model=model, identity=identity,
+                ok=False, status=403, reason="token model restriction",
+            )
+            return
+        if identity is not None:
+            ok_daily, reason = self.tokens.admit(identity) if self.tokens else (True, "")
+            if not ok_daily:
+                self._record(identity, False)
+                self._error(429, f"令牌 {identity.name} {reason}", "rate_limit_error", dialect)
+                self._log_request(
+                    started=started, dialect=dialect, model=model, identity=identity,
+                    ok=False, status=429, reason="daily quota exceeded",
+                )
+                return
+            if not self.rate_limiter.check(
+                identity.token_hash or identity.token, identity.rpm
+            ):
+                self._error(
+                    429,
+                    f"令牌 {identity.name} 超过每分钟 {identity.rpm} 请求的限额",
+                    "rate_limit_error",
+                    dialect,
+                )
+                self._log_request(
+                    started=started, dialect=dialect, model=model, identity=identity,
+                    ok=False, status=429, reason="rpm limit exceeded",
+                )
+                return
+
+        if is_test:
+            inp = body.get("input")
+            n = len(inp) if isinstance(inp, list) else 1
+            if isinstance(inp, str):
+                n = 1
+            n = max(1, min(n, 2048))
+            tokens_in = max(1, len(str(inp)) // 4)
+            dim = 8
+            data = {
+                "object": "list",
+                "model": model,
+                "data": [
+                    {
+                        "object": "embedding",
+                        "index": i,
+                        "embedding": [round(((i * dim + j) % dim + 1) / dim, 4) for j in range(dim)],
+                    }
+                    for i in range(n)
+                ],
+                "usage": {"prompt_tokens": tokens_in, "total_tokens": tokens_in},
+            }
+            self._send_json(200, data)
+            self._log_request(
+                started=started, dialect=dialect, model=model, identity=identity,
+                ok=True, tokens_in=tokens_in, channel=self.test_router.LABEL,
+            )
+            return
+
+        try:
+            data, label, tokens_in = self.router.relay_embeddings(model, body)
+        except RouterError as exc:
+            kind = "not_found_error" if exc.status == 404 else "api_error"
+            self._record(identity, False)
+            self._error(exc.status, str(exc), kind, dialect)
+            self._log_request(
+                started=started, dialect=dialect, model=model, identity=identity,
+                ok=False, status=exc.status, reason=str(exc)[:120],
+            )
+            return
+        self._send_json(200, data)
+        self._log_request(
+            started=started, dialect=dialect, model=model, identity=identity,
+            ok=True, tokens_in=tokens_in, channel=label,
+        )
 
     def _finish_relay(
         self,

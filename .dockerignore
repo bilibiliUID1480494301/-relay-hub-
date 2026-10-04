@@ -1,0 +1,11 @@
+.git
+.pytest_tmp
+dist
+build
+examples
+hubrelay.egg-info
+scripts
+tests
+data
+*.pyc
+__pycache__

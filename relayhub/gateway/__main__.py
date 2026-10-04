@@ -33,6 +33,7 @@ appconfig_module = None  # 未安装客户端扩展包时的占位
 from . import audit as audit_module
 from . import clients as clients_module
 from . import discovery as discovery_module
+from .doctor_api import cmd_doctor as _cmd_doctor
 from . import localscan as localscan_module
 from . import pairing as pairing_module
 from . import policy as policy_module
@@ -1256,19 +1257,21 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_pair(argv[1:])
     if argv and argv[0] == "audit":
         return _cmd_audit_main(argv[1:])
+    if argv and argv[0] == "doctor":
+        return _cmd_doctor(argv[1:])
     if argv and argv[0] == "check":
         return conformance_main(argv[1:])
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__)
         print(
             "可用子命令：serve / admin / scan / pool / requests / usage "
-            "/ token / clients / pair / audit / check"
+            "/ token / clients / pair / audit / check / doctor"
         )
         return 0
     print(__doc__)
     print(
         "用法：python -m relayhub.gateway serve|admin|scan|pool|requests|usage"
-        "|token|clients|pair|audit|check [选项]",
+        "|token|clients|pair|audit|check|doctor [选项]",
         file=sys.stderr,
     )
     return 2

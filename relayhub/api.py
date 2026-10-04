@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import paths
+from .doctor import run_checks as doctor
 from .gateway.localscan import LocalServer, import_to_pool, scan as _scan
 from .gateway.pool import (
     PROTOCOL_ANTHROPIC,
@@ -50,7 +51,7 @@ from .gateway.tokens import (
     generate_token,
 )
 
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 
 __all__ = [
     "Station",
@@ -58,6 +59,7 @@ __all__ = [
     "UpstreamAdded",
     "scan_local",
     "quickstart",
+    "doctor",
     "__version__",
 ]
 

@@ -25,7 +25,8 @@ from typing import Any, Iterator
 
 from . import upstream
 from .pool import KeyPool, UpstreamKey
-from .upstream import UpstreamError
+from .pool import PROTOCOL_ANTHROPIC
+from .upstream import UpstreamError, call_embeddings
 
 
 class RouterError(RuntimeError):
@@ -168,6 +169,57 @@ class KeyPoolRouter:
                     self._persist()
                     continue
         raise RouterError(f"全部 {len(attempts)} 个渠道都失败，最后一个错误：{last}", attempts)
+
+    def relay_embeddings(
+        self,
+        model: str,
+        payload: dict[str, Any],
+        trace_headers: dict[str, str] | None = None,
+    ) -> tuple[dict[str, Any], str, int]:
+        """转发 /v1/embeddings（非流式，与 chat 的协议翻译无关）。
+
+        中文：embeddings 只有 OpenAI 协议形态，Anthropic 协议渠道直接跳过。
+        返回 (上游 JSON, 渠道 label, tokens_in)；失败渠道按 chat 同一套熔断
+        规则记账（连败进冷却），成功按 prompt_tokens 记用量。
+
+        English: forward /v1/embeddings (non-streaming). Anthropic-protocol
+        channels are skipped. Returns (JSON, channel label, tokens in).
+        Failures feed the same circuit-breaker accounting as chat.
+        """
+        candidates = [
+            key
+            for key in self.pool.candidates(model)
+            if key.protocol != PROTOCOL_ANTHROPIC
+        ]
+        if not candidates:
+            declared = any(key.supports(model) for key in self.pool.keys)
+            raise RouterError(
+                self._no_candidate_reason(model),
+                status=503 if declared else 404,
+            )
+
+        attempts: list[str] = []
+        last: UpstreamError | None = None
+        for key in candidates:
+            attempts.append(key.label)
+            try:
+                data, tokens_in = call_embeddings(
+                    key, {**payload, "model": key.map_to_upstream(model)},
+                    self.timeout, trace_headers=trace_headers,
+                )
+            except UpstreamError as exc:
+                last = exc
+                self.pool.report_failure(key, exc, trip=exc.retryable)
+                self._persist()
+                continue
+            self.pool.report_success(key, tokens_in, 0, 0, 0)
+            self._persist()
+            if isinstance(data.get("model"), str):
+                data["model"] = model  # 响应里的模型名翻回对外名
+            return data, key.label, tokens_in
+        raise RouterError(
+            f"全部 {len(attempts)} 个渠道都失败，最后一个错误：{last}", attempts
+        )
 
     # -- 内部 ------------------------------------------------------------
 
@@ -403,3 +455,12 @@ class ReloadingRouter:
         fp: str | None = None,
     ) -> RelayOutcome:
         return self._current().relay(model, payload, stream, trace_headers=trace_headers, fp=fp)
+
+    def relay_embeddings(
+        self,
+        model: str,
+        payload: dict[str, Any],
+        trace_headers: dict[str, str] | None = None,
+    ) -> tuple[dict[str, Any], str, int]:
+        """与 KeyPoolRouter.relay_embeddings 同形（热加载包装）。/ Same shape as KeyPoolRouter.relay_embeddings."""
+        return self._current().relay_embeddings(model, payload, trace_headers=trace_headers)

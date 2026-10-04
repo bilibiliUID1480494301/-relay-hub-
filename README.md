@@ -22,8 +22,9 @@ third-party runtime dependencies.
   rate-limit / 5xx / auth-failure); hot reload.
 - **Downstream tokens**: per-device tokens (one-api style) with model whitelist,
   RPM/daily limits, usage accounting; plaintext shown once, SHA-256 at rest.
-- **Dual protocol**: `POST /v1/messages` (Anthropic) and `POST /v1/chat/completions`
-  (OpenAI) behind the same credential.
+- **Dual protocol + embeddings**: `POST /v1/messages` (Anthropic),
+  `POST /v1/chat/completions` and `POST /v1/embeddings` (OpenAI) behind the same
+  credential — RAG / text tools work out of the box.
 - **Pairing**: out-of-band pairing codes (single-use, expiring) + optional LAN
   zero-input pairing.
 - **Admin console**: local web UI for channels / tokens / policies / request log /
@@ -185,6 +186,39 @@ url = st.serve(background=True)  # 非阻塞；st.stop() 停站
 
 一行版：`st, url = hubrelay.quickstart("http://127.0.0.1:11434", models=["qwen2.5"])`。
 号池/令牌文件与 CLI 完全互通（`Station(home=...)` 对应 CLI 的 `--pool/--tokens`）。
+
+## Docker (English)
+
+```bash
+docker compose up -d
+docker compose exec relay hubrelay token add my-phone   # issue a token
+curl http://127.0.0.1:8799/v1/models -H "Authorization: Bearer <token>"
+```
+
+All state (pool / tokens / logs) lives in the mounted `./data` volume; the
+server-side safety gate is unchanged — `--public` refuses to start without
+credentials.
+
+## Docker（中文）
+
+`docker compose up -d` 一条命令起站；号池 / 令牌 / 日志全部落在挂载的 `./data`
+卷里，换机器搬目录即迁移。服务端安全闸不变：`--public` 无凭证拒绝启动。
+建议先 `docker compose exec relay hubrelay token add my-phone` 发一枚令牌。
+
+## Doctor 环境自检 (English)
+
+```bash
+hubrelay doctor          # python / data root / pool & tokens / local inference / port / firewall
+hubrelay doctor --json   # machine-readable
+```
+
+Or from Python: `hubrelay.doctor(port=8799)` → list of `{name, ok, detail, fix}`.
+
+## Doctor 环境自检（中文）
+
+一条命令体检建站环境：Python 版本、数据目录可写、号池与令牌状态、本机推理服务
+（Ollama / LM Studio / vLLM / llama.cpp）、端口占用、Windows 防火墙提示——每项
+带 ✓/✗ 与可执行的修复建议；`--json` 供脚本消费，API 里是 `hubrelay.doctor()`。
 
 ## Troubleshooting (English)
 

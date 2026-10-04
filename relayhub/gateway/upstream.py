@@ -647,6 +647,55 @@ def call_once(
     )
 
 
+def call_embeddings(
+    key: UpstreamKey,
+    payload: dict[str, Any],
+    timeout: float = 120.0,
+    trace_headers: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], int]:
+    """调用上游的 /v1/embeddings（OpenAI 协议）。
+
+    中文：embeddings 只有 OpenAI 协议形态（Anthropic 没有此 API），所以
+    Anthropic 协议的渠道在路由层就会被跳过。返回 (上游 JSON, tokens_in)；
+    tokens_in 取 usage.prompt_tokens（缺失时按 total_tokens / 文本长度估算）。
+
+    English: embeddings only exists in the OpenAI dialect (Anthropic has no
+    such API), so Anthropic-protocol channels are skipped at the router
+    level. Returns (upstream JSON, tokens_in).
+    """
+    connection, url = _open(key, "/embeddings", timeout)
+    try:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = _auth_headers(key, accept_sse=False, trace_headers=trace_headers)
+        headers["Content-Length"] = str(len(body))
+        connection.request("POST", url, body=body, headers=headers)
+        response = connection.getresponse()
+        if response.status != 200:
+            raise UpstreamError(
+                response.status, _read_error(response), _retryable(response.status)
+            )
+        raw = response.read()
+    except (OSError, ssl.SSLError) as exc:
+        raise UpstreamError(0, f"连接上游失败：{exc}", retryable=True) from exc
+    finally:
+        connection.close()
+
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UpstreamError(0, f"上游返回的不是合法 JSON：{exc}", retryable=True) from exc
+
+    usage = data.get("usage") or {}
+    tokens_in = int(usage.get("prompt_tokens") or usage.get("total_tokens") or 0)
+    if not tokens_in:
+        inp = payload.get("input")
+        chars = len(inp) if isinstance(inp, str) else sum(
+            len(x) for x in inp if isinstance(x, str)
+        ) if isinstance(inp, list) else 1
+        tokens_in = max(1, chars // 4)
+    return data, tokens_in
+
+
 # ---------------------------------------------------------------- 流式
 
 

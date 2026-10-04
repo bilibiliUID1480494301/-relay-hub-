@@ -31,17 +31,28 @@ class _FakeUpstream(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         length = int(self.headers.get("Content-Length", 0))
         self.rfile.read(length)
-        body = json.dumps(
-            {
-                "id": "chatcmpl-fake",
-                "object": "chat.completion",
-                "model": "fake-model",
-                "choices": [
-                    {"index": 0, "message": {"role": "assistant", "content": "hello from fake"}, "finish_reason": "stop"}
-                ],
-                "usage": {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9},
-            }
-        ).encode()
+        if self.path.endswith("/embeddings"):
+            body = json.dumps(
+                {
+                    "object": "list",
+                    "model": "fake-model",
+                    "data": [{"object": "embedding", "index": 0,
+                              "embedding": [0.1, 0.2, 0.3]}],
+                    "usage": {"prompt_tokens": 3, "total_tokens": 3},
+                }
+            ).encode()
+        else:
+            body = json.dumps(
+                {
+                    "id": "chatcmpl-fake",
+                    "object": "chat.completion",
+                    "model": "fake-model",
+                    "choices": [
+                        {"index": 0, "message": {"role": "assistant", "content": "hello from fake"}, "finish_reason": "stop"}
+                    ],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9},
+                }
+            ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -196,3 +207,43 @@ def test_lifecycle_methods(tmp_path):
     # 用量聚合
     u = st.usage()
     assert u["upstream"]["channels"] == 0 and u["downstream"]["tokens"] == 1
+
+
+def test_station_embeddings(tmp_path, fake_upstream):
+    """v0.2.7 新增：/v1/embeddings 端到端（真上游 + test 合成 + 鉴权拒绝）。"""
+    port = _free_port()
+    st = api.Station(port=port, master_key="rh_test_master", home=tmp_path / "s4")
+    st.add_upstream(fake_upstream, api_key="sk-fake", models=["fake-model"],
+                    protocol="openai-chat", label="fake")
+    tok = st.create_token("rag-dev", models=["fake-model"], rpm=120)
+    url = st.serve(background=True)
+
+    def post(payload, bearer):
+        req = urllib.request.Request(
+            url + "/v1/embeddings",
+            data=json.dumps(payload).encode(),
+            headers={"Authorization": f"Bearer {bearer}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+
+    try:
+        # 1) 真上游：请求体原样透传（向量条数由上游决定），model 名翻回对外名
+        out = post({"model": "fake-model", "input": ["a", "b"]}, tok.plaintext)
+        assert len(out["data"]) == 1 and out["model"] == "fake-model"
+        assert all(isinstance(e["embedding"], list) for e in out["data"])
+
+        # 2) test 令牌：本地合成向量，不触上游
+        test_tok = st.create_token("emb-test", scope="test")
+        out = post({"model": "anything", "input": "hi"}, test_tok.plaintext)
+        assert out["object"] == "list" and len(out["data"]) == 1
+
+        # 3) 错误令牌拒绝
+        try:
+            post({"model": "fake-model", "input": "hi"}, "rht_wrong")
+            raise AssertionError("错误令牌不应通过")
+        except urllib.error.HTTPError as e:
+            assert e.code in (401, 403)
+    finally:
+        st.stop()
