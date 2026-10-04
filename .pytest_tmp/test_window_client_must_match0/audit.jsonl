@@ -1,2 +1,0 @@
-{"ts": 1791118423.671, "event": "pair.begin", "client_id": "app", "ttl": 300.0}
-{"ts": 1791118423.673, "event": "pair.reject", "reason": "该窗口只给客户端 app 配对，收到 'other-app'"}

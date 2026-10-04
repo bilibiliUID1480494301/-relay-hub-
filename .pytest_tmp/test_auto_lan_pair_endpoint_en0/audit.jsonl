@@ -1,3 +1,0 @@
-{"ts": 1791118425.909, "event": "pair.auto", "device": "pad-student-a", "client_id": "app", "rotated": false, "ip": "192.168.1.60"}
-{"ts": 1791118425.94, "event": "pair.auto", "device": "pad-student-a", "client_id": "app", "rotated": true, "ip": "192.168.1.60"}
-{"ts": 1791118425.968, "event": "pair.reject", "reason": "免码配对只对局域网来源开放，公网请使用配对码"}

@@ -1,2 +1,0 @@
-{"ts": 1791118439.32, "token": "master", "dialect": "anthropic", "model": "glm-5.2", "channel": "secondary", "ok": true, "stream": false, "status": 200, "tokens_in": 12, "tokens_out": 8, "latency_ms": 0.0, "req_id": "1fc9605801a14d87a8f64b7b3a28d081", "ip": "127.0.0.1"}
-{"ts": 1791118439.336, "token": "master", "dialect": "openai", "model": "glm-5.2", "channel": "secondary", "ok": true, "stream": true, "status": 200, "tokens_in": 0, "tokens_out": 0, "latency_ms": 0.0, "req_id": "f9e9567c19be43298b35e3389aae876f", "ip": "127.0.0.1"}

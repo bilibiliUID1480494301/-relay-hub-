@@ -1,4 +1,4 @@
-{"ts": 1791118384.839, "event": "token.add", "name": "app-laptop", "token_hint": "…ba8d", "models": ["glm-5.2", "qwen3-32b"], "scope": "normal", "rpm": 0, "daily_requests": 0}
-{"ts": 1791118384.854, "event": "token.toggle", "name": "app-laptop", "changes": "enabled=False"}
-{"ts": 1791118384.857, "event": "token.toggle", "name": "app-laptop", "changes": "enabled=True"}
-{"ts": 1791118384.861, "event": "token.remove", "name": "app-laptop"}
+{"ts": 1791121422.584, "event": "token.add", "name": "app-laptop", "token_hint": "…984b", "models": ["glm-5.2", "qwen3-32b"], "scope": "normal", "rpm": 0, "daily_requests": 0}
+{"ts": 1791121422.6, "event": "token.toggle", "name": "app-laptop", "changes": "enabled=False"}
+{"ts": 1791121422.616, "event": "token.toggle", "name": "app-laptop", "changes": "enabled=True"}
+{"ts": 1791121422.616, "event": "token.remove", "name": "app-laptop"}

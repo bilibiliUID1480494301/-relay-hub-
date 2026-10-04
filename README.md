@@ -1,17 +1,19 @@
-# relay-hub · 局域网/自托管大模型中转站
+# relay-hub · Self-hosted LLM Relay / 局域网自托管大模型中转站
 
 [![CI](https://github.com/bilibiliUID1480494301/relay-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/bilibiliUID1480494301/relay-hub/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
 
-A self-hosted LLM relay/gateway for your LAN: multi-upstream key pool, downstream
-tokens, usage accounting, circuit breaking, and conformance probing. Pure Python
-standard library — no third-party runtime dependencies.
+**English** | A self-hosted LLM relay/gateway: unify many upstreams (official API
+keys, local self-hosted inference servers) behind one OpenAI/Anthropic-compatible
+endpoint, with key-pool scheduling, downstream tokens, usage accounting, tiered
+circuit breaking, and conformance probing. Pure Python standard library — zero
+third-party runtime dependencies.
 
-一个自托管的大模型中转站：把多家上游（官方 API Key、本地自托管推理服务）统一成一个
-OpenAI/Anthropic 兼容入口，带号池调度、下游令牌、用量记账、分级熔断和一致性探测。
-纯 Python 标准库实现，零第三方运行时依赖。
+**中文** | 一个自托管的大模型中转站：把多家上游（官方 API Key、本地自托管推理服务）
+统一成一个 OpenAI/Anthropic 兼容入口，带号池调度、下游令牌、用量记账、分级熔断和
+一致性探测。纯 Python 标准库实现，零第三方运行时依赖。
 
 ## Features (English)
 
@@ -27,10 +29,9 @@ OpenAI/Anthropic 兼容入口，带号池调度、下游令牌、用量记账、
 - **Admin console**: local web UI for channels / tokens / policies / request log /
   usage / audit — with an EN/中文 toggle in the header.
 - **Conformance probe**: run compliance probes against any compatible gateway.
-- **Loop protection, response cache, pre-consume billing, concurrency queue,
-  local inference scan** — see the Chinese section below for details.
+- **Request audit**: control-plane audit log and (redacted) request details.
 
-## 功能 Features
+## 功能 Features（中文）
 
 - **上游号池** Upstream key pool：多渠道轮询/最少失败/额度感知调度，优先级与权重，
   四档分级冷却（额度耗尽 / 限流 / 5xx / 鉴权失效），热加载。
@@ -43,7 +44,34 @@ OpenAI/Anthropic 兼容入口，带号池调度、下游令牌、用量记账、
 - **一致性探测** Conformance probe：对着任意兼容网关跑合规探测，抓出不合规实现。
 - **请求审计** Request audit：控制面操作审计与请求明细（脱敏）。
 
-## 特色 Highlights
+## Highlights (English)
+
+- **Three-layer loop protection**: forwarding chain markers (`Via` /
+  `X-Relay-Hub-Hops` / `X-Request-ID`, accumulated per hop; a mark from this very
+  instance immediately means a loop) + in-flight content-fingerprint counting at
+  ingress + egress "same fingerprint × same upstream" time-window dedup. Works
+  even when a third-party gateway in between rewrites parameters — built
+  specifically for "upstream points back at itself" topologies.
+- **Semantic-fingerprint response cache**: non-streaming 200 responses cached for
+  5 minutes by a fingerprint over semantic fields only (model, normalized
+  messages, tools, sampling params) — never link markers/auth/timestamps (they
+  would kill every hit). Isolated per caller; cache hits never touch upstream nor
+  pre-consume quota.
+- **Cache accounting**: upstream cache hits (Anthropic's
+  `cache_read/cache_creation_input_tokens`, OpenAI's `cached_tokens`) are folded
+  into channel usage and the request log, visible in the admin console.
+- **Pre-consume billing**: requests bound to a user first freeze an estimated
+  quota by input size, then settle on actual usage; upstream failure refunds in
+  full — closes the "send a huge prompt, disconnect midway, get upstream for
+  free" hole.
+- **Queue, don't reject**: when concurrency is full, requests enter a VIP/normal
+  dual waiting pool (priority devices/IPs may jump the queue); 429 only when the
+  queue is full or times out. Stacked with per-IP and per-token RPM limits.
+- **Local inference scan**: one call discovers Ollama / LM Studio / vLLM /
+  llama.cpp and imports them into the pool, scheduled/broken-in/accounted exactly
+  like official API channels.
+
+## 特色 Highlights（中文）
 
 - **三层防环路** Loop protection：转发链路标识（`Via` / `X-Relay-Hub-Hops` /
   `X-Request-ID`，逐跳累加，本站实例标记一现即判环）+ 入口请求内容指纹在飞计数 +
@@ -62,10 +90,35 @@ OpenAI/Anthropic 兼容入口，带号池调度、下游令牌、用量记账、
 - **本机推理服务扫描** Local scan：Ollama / LM Studio / vLLM / llama.cpp 等一键扫进号池，
   与官方 API 渠道同权参与调度、熔断与记账。
 
-## 快速开始 Quick Start
+## Quick Start (English)
 
-> ⚠️ **注意**：PyPI 上的 `relay-hub` 是**别人的同名项目**，与本仓库无关，请勿 `pip install relay-hub`。
-> 本项目在 PyPI 上的分发名是 **`hubrelay`**。
+> ⚠️ **Note**: the `relay-hub` package **on PyPI belongs to someone else** and has
+> nothing to do with this repo — do NOT `pip install relay-hub`.
+> Our distribution name on PyPI is **`hubrelay`**.
+
+```bash
+pip install hubrelay          # install from PyPI (recommended)
+# or from source: pip install git+https://github.com/bilibiliUID1480494301/relay-hub.git
+
+# 1) create a key pool and add an upstream key
+python -m relayhub.gateway pool init
+python -m relayhub.gateway pool add --base-url https://api.example.com \
+  --api-key sk-xxx --protocol openai-chat --model my-model
+
+# 2) start the relay
+python -m relayhub.gateway serve --pool pool.json --api-key rh_master
+
+# 3) (optional) local web admin console
+python -m relayhub.gateway admin
+```
+
+More subcommands (`token` / `clients` / `pair` / `audit` / `check` / `scan` /
+`requests` / `usage`) — see each one's `--help`.
+
+## 快速开始 Quick Start（中文）
+
+> ⚠️ **注意**：PyPI 上的 `relay-hub` 是**别人的同名项目**，与本仓库无关，请勿
+> `pip install relay-hub`。本项目在 PyPI 上的分发名是 **`hubrelay`**。
 
 ```bash
 pip install hubrelay          # PyPI 安装（推荐）
@@ -84,38 +137,7 @@ python -m relayhub.gateway admin
 ```
 
 更多子命令（`token` / `clients` / `pair` / `audit` / `check` / `scan` / `requests` /
-`usage`）见各自主命令的 `--help`。See each subcommand's `--help` for details.
-
-## Python API 建站（不想碰命令行看这里）
-
-```python
-import hubrelay
-
-st = hubrelay.Station(port=8799, master_key="rh_master")  # 建站（默认仅本机可访问）
-
-# 1) 扫描本机推理服务（Ollama / LM Studio / vLLM / llama.cpp），扫到的一键入池
-print(hubrelay.scan_local())
-st.scan_and_import()
-
-# 2) 或手动加远程上游（官方 API Key，协议自动识别；主备用 priority）
-st.add_upstream(base_url="https://api.example.com/v1",
-                api_key="sk-xxx", models=["gpt-4o", "gpt-4o-mini"])
-
-# 3) 发下游令牌（给手机/平板/第三方；明文只在发放这一次显示）
-token = st.create_token("我的手机", rpm=60, models=["gpt-4o"])
-
-# 4) 起站：脚本里用 background=True，脚本/服务用 st.stop() 停
-url = st.serve(background=True)     # → http://127.0.0.1:8799
-```
-
-最快路径一行起站：
-
-```python
-st, url = hubrelay.quickstart("http://127.0.0.1:11434", models=["qwen2.5"])
-```
-
-所有方法都有中文 docstring；号池/令牌文件与 CLI 完全互通（`Station(home=...)` 对应
-CLI 的 `--pool/--tokens` 文件）。令牌明文只显示一次，落盘为 SHA-256 哈希。
+`usage`）见各自主命令的 `--help`。
 
 ## Python API (English)
 
@@ -141,35 +163,92 @@ One-liner: `st, url = hubrelay.quickstart("http://127.0.0.1:11434", models=["qwe
 Every method carries bilingual (EN/中文) docstrings; pool & token files are fully
 interchangeable with the CLI.
 
-## Troubleshooting 常见问题
+## Python API 建站（中文，不想碰命令行看这里）
 
-- **Windows 首次起站弹防火墙提示 / 局域网设备连不上？**
-  Windows Defender 首次会拦截监听端口：弹窗时点「允许访问」；如果已点过取消，
-  到「Windows 安全中心 → 防火墙 → 允许应用通过防火墙」里勾选 Python 的专用/公用网络。
-  只开 `--discover`（UDP 8795）时也会触发一次弹窗。
-  / Windows Firewall prompts on first listen — click "Allow access"; re-enable
-  later under Windows Security → Firewall → Allow an app through firewall.
+```python
+import hubrelay
+
+st = hubrelay.Station(port=8799, master_key="rh_master")  # 建站（默认仅本机可访问）
+print(hubrelay.scan_local())     # 扫描本机推理服务（Ollama / LM Studio / vLLM / llama.cpp）
+st.scan_and_import()             # 扫到的一键入池
+
+st.add_upstream(base_url="https://api.example.com/v1",
+                api_key="sk-xxx", models=["gpt-4o", "gpt-4o-mini"])  # 协议自动识别
+
+token = st.create_token("我的手机", rpm=60)  # 明文只在发放这一次显示（落盘为 SHA-256）
+st.set_token_enabled("我的手机", False)      # 临时停用；remove_token() 吊销
+st.set_upstream_enabled("up-1", False)       # 渠道停用维护
+print(st.usage())                            # 聚合用量快照
+
+url = st.serve(background=True)  # 非阻塞；st.stop() 停站
+```
+
+一行版：`st, url = hubrelay.quickstart("http://127.0.0.1:11434", models=["qwen2.5"])`。
+号池/令牌文件与 CLI 完全互通（`Station(home=...)` 对应 CLI 的 `--pool/--tokens`）。
+
+## Troubleshooting (English)
+
+- **Windows firewall prompt on first listen / LAN devices can't connect?**
+  Windows Defender blocks the listen port the first time: click "Allow access";
+  if you already clicked cancel, re-enable it under Windows Security → Firewall →
+  Allow an app through firewall (both private/public for Python). Starting with
+  `--discover` (UDP 8795) triggers its own prompt.
+- **Phone can't reach `http://192.168.x.x:8799`?** The default binds to loopback
+  (localhost only). For LAN use `serve --host 0.0.0.0 --public` (credentials
+  required — the safety gate), or `Station(host="0.0.0.0")` in the Python API.
+- **Client gets an empty model list?** No key in the pool declares models
+  (`pool add --model` or `scan_and_import()`), or the token's model whitelist
+  doesn't include it.
+- **`import hubrelay` fails after install?** Upgrade to ≥ 0.2.3
+  (`pip install -U hubrelay`); 0.2.1/0.2.2 were broken releases (now yanked).
+
+## 常见问题 Troubleshooting（中文）
+
+- **Windows 首次起站弹防火墙提示 / 局域网设备连不上？** Windows Defender 首次会拦截
+  监听端口：弹窗时点「允许访问」；如果已点过取消，到「Windows 安全中心 → 防火墙 →
+  允许应用通过防火墙」里勾选 Python 的专用/公用网络。只开 `--discover`（UDP 8795）
+  时也会触发一次弹窗。
 - **手机连不上 `http://192.168.x.x:8799`？** 默认只绑回环（本机）。给局域网用要
   `serve --host 0.0.0.0 --public`（必须已配 master key 或下游令牌——安全闸），
   Python API 里则 `Station(host="0.0.0.0")`。
 - **客户端拉不到模型列表？** 号池里没有任何 Key 声明模型（`pool add --model` 或
   `scan_and_import()`），或该下游令牌的模型白名单没包含它。
 - **装了 hubrelay 但 `import hubrelay` 报错？** 请升级到 ≥ 0.2.3
-  （`pip install -U hubrelay`）；0.2.1/0.2.2 是坏版本。
+  （`pip install -U hubrelay`）；0.2.1/0.2.2 是坏版本（已 yank）。
 
-## 运行环境 Requirements
+## Requirements (English)
 
-- Python 3.10+（仅标准库）
+- Python 3.10+ (standard library only, no dependencies)
 - Windows / macOS / Linux
 
-## 免责声明 Disclaimer
+## 运行环境 Requirements（中文）
 
-> **中文**：本项目仅供学习、研究与个人自托管用途。使用者应自行确保其使用行为符合
-> 所在地区法律法规，以及其接入的上游服务的用户协议与服务条款。本项目按「现状」提供，
-> 不附带任何明示或暗示的担保；作者不对任何人因使用本项目而产生的直接或间接损失负责。
-> 请勿将本项目用于任何违反上游服务条款或损害第三方权益的用途，由此产生的一切风险与
-> 责任由使用者自行承担。
->
+- Python 3.10+（仅标准库，零依赖）
+- Windows / macOS / Linux
+
+## Security Notes (English)
+
+- Upstream keys are stored as plaintext JSON in the local pool file (same as most
+  clients); protect file permissions and disk encryption yourself, and **never**
+  commit the pool file to version control or share it.
+- Before binding a non-loopback address (LAN/public), the gateway REQUIRES
+  credentials (master key or at least one downstream token); all traffic must
+  carry credentials.
+- The admin console binds to loopback by default; binding elsewhere requires an
+  explicit `--token`.
+- Suspected key leak? Revoke immediately (`token rm` / rotate upstream keys).
+
+## 安全须知 Security Notes（中文）
+
+- 上游 Key 以明文 JSON 存放在本地号池文件中（与常见客户端做法一致）；请自行做好
+  文件权限与磁盘加密，**不要**把号池文件提交进版本库或分享给他人。
+- 绑定非回环地址（公网/局域网）前，网关强制要求已配置凭证（master Key 或下游令牌），
+  且所有流量都必须携带凭证。
+- 管理控制台默认只监听回环地址；绑非回环地址必须显式提供 `--token`。
+- 遇到疑似密钥泄露请立即吊销（`token rm` / 更换上游 Key）。
+
+## Disclaimer 免责声明
+
 > **English**: This project is provided for learning, research, and personal
 > self-hosting purposes only. You are solely responsible for ensuring that your
 > use complies with applicable laws and regulations in your jurisdiction as well
@@ -179,15 +258,12 @@ interchangeable with the CLI.
 > use of this software. Any risk arising from use in violation of upstream terms
 > of service rests solely with the user.
 
-## 安全须知 Security Notes
+> **中文**：本项目仅供学习、研究与个人自托管用途。使用者应自行确保其使用行为符合
+> 所在地区法律法规，以及其接入的上游服务的用户协议与服务条款。本项目按「现状」提供，
+> 不附带任何明示或暗示的担保；作者不对任何人因使用本项目而产生的直接或间接损失负责。
+> 请勿将本项目用于任何违反上游服务条款或损害第三方权益的用途，由此产生的一切风险与
+> 责任由使用者自行承担。
 
-- 上游 Key 以明文 JSON 存放在本地号池文件中（与常见客户端做法一致）；请自行做好
-  文件权限与磁盘加密，**不要**把号池文件提交进版本库或分享给他人。
-- 绑定非回环地址（公网/局域网）前，网关强制要求已配置凭证（master Key 或下游令牌），
-  且所有流量都必须携带凭证。
-- 管理控制台默认只监听回环地址；绑非回环地址必须显式提供 `--token`。
-- 遇到疑似密钥泄露请立即吊销（`token rm` / 更换上游 Key）。
-
-## 许可证 License
+## License 许可证
 
 [MIT](./LICENSE)

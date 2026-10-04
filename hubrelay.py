@@ -16,4 +16,4 @@ from relayhub.api import (  # noqa: F401
     scan_local,
 )
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"

@@ -1,2 +1,0 @@
-{"ts": 1791118382.245, "event": "pool.mutate", "method": "POST", "route": "/api/keys"}
-{"ts": 1791118382.751, "event": "pool.mutate", "method": "DELETE", "route": "/api/keys/a96fbda2-9519-47fc-bbc0-f64f92579c62"}

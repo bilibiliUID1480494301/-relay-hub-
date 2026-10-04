@@ -1,4 +1,0 @@
-{"ts": 1791118375.835, "event": "pool.mutate", "method": "POST", "route": "/api/keys"}
-{"ts": 1791118375.843, "event": "pool.mutate", "method": "PUT", "route": "/api/keys/f4243453-efad-4707-9c51-c51f7709020a"}
-{"ts": 1791118375.866, "event": "pool.mutate", "method": "PUT", "route": "/api/keys/f4243453-efad-4707-9c51-c51f7709020a"}
-{"ts": 1791118375.87, "event": "pool.mutate", "method": "DELETE", "route": "/api/keys/f4243453-efad-4707-9c51-c51f7709020a"}
