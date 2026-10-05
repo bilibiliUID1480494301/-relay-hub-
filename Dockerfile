@@ -17,6 +17,12 @@ RUN pip install --no-cache-dir .
 VOLUME ["/data"]
 EXPOSE 8799
 
+# 探活：/healthz 无需凭证（compose/Docker 自动重启坏容器）
+HEALTHCHECK --interval=60s --timeout=5s --start-period=10s     CMD ["python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8799/healthz', timeout=4).status == 200 else 1)"]
+
+# 探活：/healthz 无需凭证（compose/Docker 自动重启坏容器）
+HEALTHCHECK --interval=60s --timeout=5s --start-period=10s     CMD ["python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8799/healthz', timeout=4).status == 200 else 1)"]
+
 # 安全闸保持服务端原样：--public 必须已配凭证（下游令牌/master key），否则拒绝启动。
 # 建议先 `docker compose exec relay hubrelay token add my-phone` 发一枚令牌再对外。
 ENTRYPOINT ["hubrelay"]

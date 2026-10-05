@@ -273,6 +273,170 @@ def openai_completion(model: str, message: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------------- Responses API（OpenAI 新口 /v1/responses） ----------------
+
+
+def _responses_content_text(content):
+    """Responses 的 content（str / list[input_text|output_text 块]）→ 纯文本。"""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    parts = []
+    items = content if isinstance(content, list) else [content]
+    for c in items:
+        if isinstance(c, dict):
+            parts.append(str(c.get("text") or c.get("content") or ""))
+        else:
+            parts.append(str(c))
+    return "".join(parts)
+
+
+def responses_to_chat(body):
+    """Responses 请求 → OpenAI chat 请求（随后走 to_anthropic_request 归一化）。
+
+    input 支持 string 与 items 列表（message / function_call_output）；
+    instructions 映射为 system；max_output_tokens 映射为 max_tokens；
+    reasoning 等网关无法透传的字段安全忽略。
+    """
+    msgs = []
+    if body.get("instructions"):
+        msgs.append({"role": "system", "content": str(body["instructions"])})
+    inp = body.get("input")
+    if isinstance(inp, str):
+        msgs.append({"role": "user", "content": inp})
+    elif isinstance(inp, list):
+        for item in inp:
+            if not isinstance(item, dict):
+                msgs.append({"role": "user", "content": str(item)})
+                continue
+            itype = item.get("type", "message")
+            if itype == "function_call_output":
+                msgs.append({"role": "tool", "tool_call_id": str(item.get("call_id") or ""),
+                             "content": str(item.get("output") or "")})
+                continue
+            if itype in ("reasoning", "item_reference"):
+                continue  # 网关不存推理态，安全丢弃
+            role = item.get("role", "user")
+            if role not in ("user", "assistant", "system", "developer"):
+                role = "user"
+            text = _responses_content_text(item.get("content"))
+            if role == "developer":
+                role = "system"
+            msgs.append({"role": role, "content": text})
+    else:
+        msgs.append({"role": "user", "content": ""})
+
+    chat = {"messages": msgs}
+    for k in ("model", "temperature", "top_p", "stream", "tools", "tool_choice",
+              "parallel_tool_calls", "user", "metadata"):
+        if body.get(k) is not None:
+            chat[k] = body[k]
+    if body.get("max_output_tokens"):
+        chat["max_tokens"] = body["max_output_tokens"]
+    return chat
+
+
+def responses_completion(model, message):
+    """Anthropic message（网关 IR）→ Responses 非流式应答。"""
+    usage = message.get("usage") or {}
+    tokens_in = int(usage.get("input_tokens") or 0)
+    tokens_out = int(usage.get("output_tokens") or 0)
+    text = _message_text(message)
+    rid = "resp_" + uuid.uuid4().hex[:24]
+    mid = "msg_" + uuid.uuid4().hex[:24]
+    return {
+        "id": rid,
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": "completed",
+        "model": model,
+        "output": [{
+            "type": "message", "id": mid, "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": text, "annotations": []}],
+        }],
+        "output_text": text,
+        "usage": {"input_tokens": tokens_in, "output_tokens": tokens_out,
+                  "total_tokens": tokens_in + tokens_out},
+        "parallel_tool_calls": True,
+    }
+
+
+def responses_chunks(model, events):
+    """Anthropic 事件流 → Responses SSE (event, payload) 序列（真增量）。
+
+    事件序：response.created → output_item.added → content_part.added →
+    每个 text_delta 一个 response.output_text.delta → text/part/item.done →
+    response.completed（带 usage）。
+    """
+    rid = "resp_" + uuid.uuid4().hex[:24]
+    mid = "msg_" + uuid.uuid4().hex[:24]
+    created = int(time.time())
+    seq = 0
+    buf = ""
+    tokens_in = tokens_out = 0
+
+    def ev(name, payload):
+        nonlocal seq
+        seq += 1
+        return (name, {"type": name, "sequence_number": seq, **payload})
+
+    def resp_stub(status):
+        return {"id": rid, "object": "response", "created_at": created,
+                "status": status, "model": model, "output": [],
+                "usage": {"input_tokens": tokens_in, "output_tokens": tokens_out,
+                          "total_tokens": tokens_in + tokens_out}}
+
+    yield ev("response.created", {"response": resp_stub("in_progress")})
+    yield ev("response.in_progress", {"response": resp_stub("in_progress")})
+    yield ev("response.output_item.added", {
+        "output_index": 0,
+        "item": {"type": "message", "id": mid, "role": "assistant",
+                 "status": "in_progress", "content": []},
+    })
+    yield ev("response.content_part.added", {
+        "item_id": mid, "output_index": 0, "content_index": 0,
+        "part": {"type": "output_text", "text": "", "annotations": []},
+    })
+    for name, payload in events:
+        if name == "message_start":
+            u = (payload.get("message") or {}).get("usage") or {}
+            tokens_in = int(u.get("input_tokens") or 0)
+        elif name == "content_block_delta":
+            d = payload.get("delta") or {}
+            if d.get("type") == "text_delta":
+                piece = d.get("text") or ""
+                buf += piece
+                yield ev("response.output_text.delta", {
+                    "item_id": mid, "output_index": 0, "content_index": 0,
+                    "delta": piece,
+                })
+        elif name == "message_delta":
+            u = payload.get("usage") or {}
+            tokens_out = int(u.get("output_tokens") or tokens_out)
+    yield ev("response.output_text.done", {
+        "item_id": mid, "output_index": 0, "content_index": 0, "text": buf,
+    })
+    yield ev("response.content_part.done", {
+        "item_id": mid, "output_index": 0, "content_index": 0,
+        "part": {"type": "output_text", "text": buf, "annotations": []},
+    })
+    yield ev("response.output_item.done", {
+        "output_index": 0,
+        "item": {"type": "message", "id": mid, "role": "assistant",
+                 "status": "completed",
+                 "content": [{"type": "output_text", "text": buf, "annotations": []}]},
+    })
+    done = resp_stub("completed")
+    done["output"] = [{
+        "type": "message", "id": mid, "role": "assistant", "status": "completed",
+        "content": [{"type": "output_text", "text": buf, "annotations": []}],
+    }]
+    done["output_text"] = buf
+    yield ev("response.completed", {"response": done})
+
+
 def openai_chunks(
     model: str, events: Iterable[tuple[str, dict[str, Any]]]
 ) -> Iterator[dict[str, Any]]:
@@ -969,7 +1133,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         Anthropic：{"type":"error","error":{"type":...,"message":...}}
         OpenAI   ：{"error":{"message":...,"type":...,"code":...}}
         """
-        if dialect == "openai":
+        if dialect in ("openai", "responses"):
             self._send_json(status, {"error": {"message": message, "type": kind, "code": None}})
         else:
             self._send_json(status, {"type": "error", "error": {"type": kind, "message": message}})
@@ -1194,11 +1358,19 @@ class RelayHandler(BaseHTTPRequestHandler):
                 "<p>可用端点（均需凭证）：</p>"
                 "<ul><li><code>GET /v1/models</code></li>"
                 "<li><code>POST /v1/chat/completions</code></li>"
-                "<li><code>POST /v1/messages</code></li></ul>"
+                "<li><code>POST /v1/messages</code></li>"
+                "<li><code>POST /v1/embeddings</code></li>"
+                "<li><code>POST /v1/responses</code></li></ul>"
+                "<p>健康检查：<code>GET /healthz</code>（无需凭证，供 Docker/负载均衡探活）。</p>"
                 "<p style=\"color:#888\">凭证无效或缺失会返回 401；"
                 "超过限额返回 429。拿测试密钥做连通性检查是正常用法。</p>"
                 "</body></html>"
             )
+            return
+        if path == "/healthz":
+            # 无需凭证的探活端点：Docker HEALTHCHECK / 负载均衡 / 监控用。
+            # 刻意不泄露版本号与模型信息——探活只需要知道"活着"。
+            self._send_json(200, {"ok": True, "server": "relay-hub"})
             return
         if path == "/panel":
             self._send_html(PANEL_HTML)
@@ -1253,12 +1425,16 @@ class RelayHandler(BaseHTTPRequestHandler):
         if path != "/v1/models":
             self._error(404, f"未知路径 {self.path}", "not_found_error")
             return
-        authorized, _ = self._authenticate()
+        authorized, identity = self._authenticate()
         if not authorized:
             return
         created = int(time.time())
         data = []
         for model, window in sorted(self.router.models().items()):
+            # 令牌级模型白名单同步到列表：限了模型的令牌不该看到用不了的模型
+            # （one-api 同语义；master 凭证 identity=None，不受限）。
+            if identity is not None and identity.models and model not in identity.models:
+                continue
             item: dict[str, Any] = {
                 "id": model,
                 "object": "model",
@@ -1299,12 +1475,13 @@ class RelayHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/auth/") or path.startswith("/api/user/"):
             self._handle_panel_api(path)
             return
-        if path not in ("/v1/messages", "/v1/chat/completions"):
+        if path not in ("/v1/messages", "/v1/chat/completions", "/v1/responses"):
             self._error(404, f"未知路径 {self.path}", "not_found_error")
             return
         started = time.monotonic()
         # 入站协议决定出站编码：两个口共用同一套路由，只有「怎么说话」不同。
-        dialect = "openai" if path == "/v1/chat/completions" else "anthropic"
+        dialect = ("openai" if path == "/v1/chat/completions"
+                   else "responses" if path == "/v1/responses" else "anthropic")
 
         # 单 IP 限流：放在鉴权之前——刷请求的人不带有效凭证也一样占带宽。
         # 鉴权失败的请求同样计入（这正是要防的：拿垃圾凭证打接口探测）。
@@ -1676,7 +1853,10 @@ class RelayHandler(BaseHTTPRequestHandler):
     ) -> None:
         router = self.test_router if is_test else self.router
 
-        if dialect == "openai":
+        if dialect == "responses":
+            # Responses 请求先翻译成 OpenAI chat 形态，再统一归一化为 Anthropic IR。
+            body = responses_to_chat(body)
+        if dialect in ("openai", "responses"):
             # 网关内部只认 Anthropic 形态，OpenAI 请求先归一化，
             # 否则「OpenAI 客户端 + Anthropic 上游」会把错的请求体转过去。
             try:
@@ -1718,6 +1898,8 @@ class RelayHandler(BaseHTTPRequestHandler):
                     )
                     if dialect == "openai":
                         self._send_json(200, openai_completion(model, cached))
+                    elif dialect == "responses":
+                        self._send_json(200, responses_completion(model, cached))
                     else:
                         self._send_json(200, cached)
                     return
@@ -1840,6 +2022,8 @@ class RelayHandler(BaseHTTPRequestHandler):
         )
         if dialect == "openai":
             self._send_json(200, openai_completion(model, outcome.message))
+        elif dialect == "responses":
+            self._send_json(200, responses_completion(model, outcome.message))
         else:
             self._send_json(200, outcome.message)
 
@@ -1851,6 +2035,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 for item in openai_chunks(outcome.model, outcome.events or ()):
                     self._sse_raw(f"data: {json.dumps(item, ensure_ascii=False)}\n\n")
                 self._sse_raw("data: [DONE]\n\n")
+            elif dialect == "responses":
+                for name, payload in responses_chunks(outcome.model, outcome.events or ()):
+                    self._sse(name, payload)
             else:
                 for event, payload in outcome.events or ():
                     self._sse(event, payload)
@@ -1863,6 +2050,13 @@ class RelayHandler(BaseHTTPRequestHandler):
                     error = {"error": {"message": message, "type": "api_error", "code": None}}
                     self._sse_raw(f"data: {json.dumps(error, ensure_ascii=False)}\n\n")
                     self._sse_raw("data: [DONE]\n\n")
+                elif dialect == "responses":
+                    err = {"type": "error", "code": "api_error",
+                           "message": message, "param": None, "sequence_number": -1}
+                    self._sse_raw(
+                        "event: error\ndata: "
+                        + json.dumps(err, ensure_ascii=False) + "\n\n"
+                    )
                 else:
                     payload = {
                         "type": "error",

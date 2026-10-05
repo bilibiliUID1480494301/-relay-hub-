@@ -30,6 +30,33 @@ def _daily_path(path: Path, ts: float) -> Path:
     return path.with_name(f"{path.stem}.{stamp}{path.suffix}")
 
 
+# 日志保留天数（0 = 永久保留 / keep forever）。serve 启动时经 set_retention 注入。
+_RETENTION_DAYS = 0
+_last_prune = 0.0
+
+
+def set_retention(days: int) -> None:
+    """设置保留天数 / set log retention in days (0 = keep forever)."""
+    global _RETENTION_DAYS
+    _RETENTION_DAYS = max(0, int(days))
+
+
+def _prune_old(path: Path, now: float) -> None:
+    """删除超过保留天数的按日明细文件（每小时至多跑一次）。"""
+    global _last_prune
+    if _RETENTION_DAYS <= 0 or now - _last_prune < 3600:
+        return
+    _last_prune = now
+    cutoff = time.strftime("%Y%m%d", time.localtime(now - _RETENTION_DAYS * 86400))
+    for f in _all_files(path):
+        stamp = f.stem.rsplit(".", 1)[-1]
+        if stamp.isdigit() and stamp < cutoff:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+
 def _all_files(path: Path) -> list[Path]:
     """所有按天切分的明细文件，按文件名（即日期）正序。"""
     parent = Path(path).parent
@@ -68,6 +95,7 @@ def record(
 ) -> None:
     """追加一条请求明细。reason 用于失败时的简短归因（不含请求体）。"""
     ts = ts if ts is not None else time.time()
+    _prune_old(path, ts)
     entry = {
         "ts": round(ts, 3),
         "token": token,

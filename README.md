@@ -38,8 +38,9 @@ third-party runtime dependencies.
   四档分级冷却（额度耗尽 / 限流 / 5xx / 鉴权失效），热加载。
 - **下游令牌** Downstream tokens：per-device 令牌（对标 one-api 的「令牌」），模型白名单、
   RPM/每日限额、用量记账，明文只在发放时出现一次。
-- **双协议入口** Dual protocol：`POST /v1/messages`（Anthropic）与
-  `POST /v1/chat/completions`（OpenAI），同一令牌两种鉴权头都认。
+- **多协议入口** Multi-protocol：`POST /v1/messages`（Anthropic）、
+  `POST /v1/chat/completions`、`POST /v1/embeddings`、`POST /v1/responses`
+  （OpenAI，含流式；新版 IDE/Agent 客户端开箱即用），同一令牌多种鉴权头都认。
 - **配对发放** Pairing：带外配对码（成功即焚、限次）+ 可选的局域网免码配对。
 - **管理控制台** Admin console：本地网页，管理渠道/令牌/策略/请求明细/用量/审计。
 - **一致性探测** Conformance probe：对着任意兼容网关跑合规探测，抓出不合规实现。
@@ -204,6 +205,20 @@ credentials.
 `docker compose up -d` 一条命令起站；号池 / 令牌 / 日志全部落在挂载的 `./data`
 卷里，换机器搬目录即迁移。服务端安全闸不变：`--public` 无凭证拒绝启动。
 建议先 `docker compose exec relay hubrelay token add my-phone` 发一枚令牌。
+
+Health: `GET /healthz` (no credentials) is wired into the image `HEALTHCHECK`;
+request logs auto-prune after 30 days (`--log-retention-days`, 0 = keep forever).
+
+健康检查：镜像内置 `HEALTHCHECK` 打 `/healthz`（无需凭证）；请求明细默认保留
+30 天自动清理（`--log-retention-days` 调整，0=永久）。`/v1/models` 现在按令牌
+白名单过滤——受限令牌只看到自己能用的模型。
+
+Health: `GET /healthz` (no credentials) is wired into the image `HEALTHCHECK`;
+request logs auto-prune after 30 days (`--log-retention-days`, 0 = keep forever).
+
+健康检查：镜像内置 `HEALTHCHECK` 打 `/healthz`（无需凭证）；请求明细默认保留
+30 天自动清理（`--log-retention-days` 调整，0=永久）。`/v1/models` 现在按令牌
+白名单过滤——受限令牌只看到自己能用的模型。
 
 ## Doctor 环境自检 (English)
 

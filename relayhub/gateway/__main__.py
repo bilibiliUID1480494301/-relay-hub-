@@ -111,6 +111,9 @@ def _pool_file(args: argparse.Namespace) -> Path:
 
 
 def _cmd_serve(argv: list[str]) -> int:
+    if argv and argv[0] in ("help", "-h") and "--help" not in argv:
+        # 「serve help」这种写法直接映射到 --help，别让人吃 argparse 报错
+        argv = ["--help"]
     parser = argparse.ArgumentParser(prog="relayhub.gateway serve", description="起中转站")
     parser.add_argument(
         "--pool", type=Path, default=None, help="号池文件；不传则用演示池"
@@ -120,7 +123,7 @@ def _cmd_serve(argv: list[str]) -> int:
         type=Path,
         default=None,
         dest="tokens",
-        help="下游令牌文件；不传则用默认路径（默认 %LOCALAPPDATA%\\relay-hub\\tokens.json）",
+        help="下游令牌文件；不传则用默认路径（默认 %%LOCALAPPDATA%%\\relay-hub\\tokens.json）",
     )
     parser.add_argument(
         "--discover",
@@ -188,6 +191,13 @@ def _cmd_serve(argv: list[str]) -> int:
         action="store_true",
         dest="no_request_log",
         help="不写请求明细日志（默认写到 RELAYHUB_HOME\\requests.jsonl）",
+    )
+    parser.add_argument(
+        "--log-retention-days",
+        type=int,
+        default=30,
+        dest="log_retention_days",
+        help="请求明细保留天数（按日文件自动清理；0=永久保留，默认 30）",
     )
     parser.add_argument(
         "--ip-rpm",
@@ -352,6 +362,7 @@ def _cmd_serve(argv: list[str]) -> int:
     )
     if responder is not None:
         print(f"发现服务：UDP {responder.port} 广播应答中。")
+    reqlog_module.set_retention(args.log_retention_days)
     if args.no_request_log:
         print("请求明细：已关闭（--no-request-log）。")
     else:
@@ -604,7 +615,7 @@ def _cmd_pool(argv: list[str]) -> int:
         "--pool",
         type=Path,
         default=None,
-        help="号池文件（默认 %LOCALAPPDATA%\\relay-hub\\pool.json）",
+        help="号池文件（默认 %%LOCALAPPDATA%%\\relay-hub\\pool.json）",
     )
 
     parser = argparse.ArgumentParser(prog="relayhub.gateway pool", description="管理上游号池")
@@ -795,7 +806,7 @@ def _cmd_token(argv: list[str]) -> int:
         type=Path,
         default=None,
         dest="tokens",
-        help="令牌文件（默认 %LOCALAPPDATA%\\relay-hub\\tokens.json）",
+        help="令牌文件（默认 %%LOCALAPPDATA%%\\relay-hub\\tokens.json）",
     )
 
     parser = argparse.ArgumentParser(
@@ -1261,6 +1272,11 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_doctor(argv[1:])
     if argv and argv[0] == "check":
         return conformance_main(argv[1:])
+    if argv and argv[0] in ("--version", "-V"):
+        from .. import __version__ as gw_version  # noqa: PLC0415
+
+        print(f"hubrelay (relay-hub) {gw_version}")
+        return 0
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__)
         print(

@@ -247,3 +247,211 @@ def test_station_embeddings(tmp_path, fake_upstream):
             assert e.code in (401, 403)
     finally:
         st.stop()
+
+
+def test_healthz_and_models_filter(tmp_path, fake_upstream):
+    """v0.2.8：/healthz 无凭证探活；/v1/models 按令牌白名单过滤。"""
+    port = _free_port()
+    st = api.Station(port=port, master_key="rh_m", home=tmp_path / "s5")
+    st.add_upstream(fake_upstream, api_key="sk-f", models=["fake-model"],
+                    protocol="openai-chat", label="fake")
+    limited = st.create_token("limited", models=["fake-model"])
+    url = st.serve(background=True)
+    try:
+        # 1) healthz：无凭证 200，且不泄露模型/版本
+        with urllib.request.urlopen(url + "/healthz", timeout=5) as r:
+            body = json.loads(r.read())
+        assert body["ok"] is True and "models" not in body
+
+        # 2) 受限令牌只见白名单内模型
+        req = urllib.request.Request(url + "/v1/models",
+                                     headers={"Authorization": f"Bearer {limited.plaintext}"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())["data"]
+        assert [m["id"] for m in data] == ["fake-model"]
+
+        # 3) master 看全量（当前就一个模型，等价性检查）
+        req = urllib.request.Request(url + "/v1/models",
+                                     headers={"Authorization": "Bearer rh_m"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            assert len(json.loads(r.read())["data"]) == 1
+    finally:
+        st.stop()
+
+
+def test_healthz_and_models_filter(tmp_path, fake_upstream):
+    """v0.2.8：/healthz 无凭证探活；/v1/models 按令牌白名单过滤。"""
+    port = _free_port()
+    st = api.Station(port=port, master_key="rh_m", home=tmp_path / "s5")
+    st.add_upstream(fake_upstream, api_key="sk-f", models=["fake-model"],
+                    protocol="openai-chat", label="fake")
+    limited = st.create_token("limited", models=["fake-model"])
+    url = st.serve(background=True)
+    try:
+        # 1) healthz：无凭证 200，且不泄露模型/版本
+        with urllib.request.urlopen(url + "/healthz", timeout=5) as r:
+            body = json.loads(r.read())
+        assert body["ok"] is True and "models" not in body
+
+        # 2) 受限令牌只见白名单内模型
+        req = urllib.request.Request(url + "/v1/models",
+                                     headers={"Authorization": f"Bearer {limited.plaintext}"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())["data"]
+        assert [m["id"] for m in data] == ["fake-model"]
+
+        # 3) master 看全量（当前就一个模型，等价性检查）
+        req = urllib.request.Request(url + "/v1/models",
+                                     headers={"Authorization": "Bearer rh_m"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            assert len(json.loads(r.read())["data"]) == 1
+    finally:
+        st.stop()
+
+
+def test_responses_api(tmp_path, fake_upstream):
+    """v0.2.10：/v1/responses（OpenAI Responses API）端到端。
+
+    覆盖：非流式（string input + instructions）、流式（SSE 事件序）、
+    items 列表 input、test 令牌合成应答、错误令牌拒绝。
+    """
+    port = _free_port()
+    st = api.Station(port=port, master_key="rh_m", home=tmp_path / "s6")
+    st.add_upstream(fake_upstream, api_key="sk-f", models=["fake-model"],
+                    protocol="openai-chat", label="fake")
+    tok = st.create_token("ide-client", models=["fake-model"], rpm=120)
+    url = st.serve(background=True)
+
+    def post(payload, bearer):
+        req = urllib.request.Request(
+            url + "/v1/responses",
+            data=json.dumps(payload).encode(),
+            headers={"Authorization": f"Bearer {bearer}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        return urllib.request.urlopen(req, timeout=10)
+
+    try:
+        # 1) 非流式：string input，回答从 chat 上游翻译而来
+        with post({"model": "fake-model", "input": "hi"}, tok.plaintext) as r:
+            out = json.loads(r.read())
+        assert out["object"] == "response" and out["status"] == "completed"
+        assert out["output_text"] == "hello from fake"
+        assert out["output"][0]["content"][0]["type"] == "output_text"
+        assert out["usage"]["input_tokens"] > 0
+
+        # 2) items 列表 + instructions
+        with post({"model": "fake-model",
+                   "instructions": "你是助手",
+                   "input": [{"type": "message", "role": "user",
+                              "content": [{"type": "input_text", "text": "hi"}]}]},
+                  tok.plaintext) as r:
+            out = json.loads(r.read())
+        assert out["output_text"] == "hello from fake"
+
+        # 3) 流式：事件序完整，delta 拼出全文
+        test_tok = st.create_token("resp-test", scope="test")
+        req = urllib.request.Request(
+            url + "/v1/responses",
+            data=json.dumps({"model": "any", "input": "hi", "stream": True}).encode(),
+            headers={"Authorization": f"Bearer {test_tok.plaintext}",
+                     "Content-Type": "application/json"},
+            method="POST",
+        )
+        names, text = [], ""
+        with urllib.request.urlopen(req, timeout=10) as r:
+            for raw in r.read().decode("utf-8").split("\n\n"):
+                for line in raw.splitlines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = json.loads(line[len("data: "):])
+                    names.append(payload.get("type"))
+                    if payload.get("type") == "response.output_text.delta":
+                        text += payload["delta"]
+        assert names[0] == "response.created"
+        assert "response.output_text.delta" in names
+        assert names[-1] == "response.completed"
+        assert len(text) > 0
+
+        # 4) 错误令牌拒绝（openai 形状错误体）
+        try:
+            post({"model": "fake-model", "input": "hi"}, "rht_wrong")
+            raise AssertionError("错误令牌不应通过")
+        except urllib.error.HTTPError as e:
+            assert e.code in (401, 403)
+    finally:
+        st.stop()
+
+
+def test_responses_api(tmp_path, fake_upstream):
+    """v0.2.10：/v1/responses（OpenAI Responses API）端到端。
+
+    覆盖：非流式（string input + instructions）、流式（SSE 事件序）、
+    items 列表 input、test 令牌合成应答、错误令牌拒绝。
+    """
+    port = _free_port()
+    st = api.Station(port=port, master_key="rh_m", home=tmp_path / "s6")
+    st.add_upstream(fake_upstream, api_key="sk-f", models=["fake-model"],
+                    protocol="openai-chat", label="fake")
+    tok = st.create_token("ide-client", models=["fake-model"], rpm=120)
+    url = st.serve(background=True)
+
+    def post(payload, bearer):
+        req = urllib.request.Request(
+            url + "/v1/responses",
+            data=json.dumps(payload).encode(),
+            headers={"Authorization": f"Bearer {bearer}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        return urllib.request.urlopen(req, timeout=10)
+
+    try:
+        # 1) 非流式：string input，回答从 chat 上游翻译而来
+        with post({"model": "fake-model", "input": "hi"}, tok.plaintext) as r:
+            out = json.loads(r.read())
+        assert out["object"] == "response" and out["status"] == "completed"
+        assert out["output_text"] == "hello from fake"
+        assert out["output"][0]["content"][0]["type"] == "output_text"
+        assert out["usage"]["input_tokens"] > 0
+
+        # 2) items 列表 + instructions
+        with post({"model": "fake-model",
+                   "instructions": "你是助手",
+                   "input": [{"type": "message", "role": "user",
+                              "content": [{"type": "input_text", "text": "hi"}]}]},
+                  tok.plaintext) as r:
+            out = json.loads(r.read())
+        assert out["output_text"] == "hello from fake"
+
+        # 3) 流式：事件序完整，delta 拼出全文
+        test_tok = st.create_token("resp-test", scope="test")
+        req = urllib.request.Request(
+            url + "/v1/responses",
+            data=json.dumps({"model": "any", "input": "hi", "stream": True}).encode(),
+            headers={"Authorization": f"Bearer {test_tok.plaintext}",
+                     "Content-Type": "application/json"},
+            method="POST",
+        )
+        names, text = [], ""
+        with urllib.request.urlopen(req, timeout=10) as r:
+            for raw in r.read().decode("utf-8").split("\n\n"):
+                for line in raw.splitlines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = json.loads(line[len("data: "):])
+                    names.append(payload.get("type"))
+                    if payload.get("type") == "response.output_text.delta":
+                        text += payload["delta"]
+        assert names[0] == "response.created"
+        assert "response.output_text.delta" in names
+        assert names[-1] == "response.completed"
+        assert len(text) > 0
+
+        # 4) 错误令牌拒绝（openai 形状错误体）
+        try:
+            post({"model": "fake-model", "input": "hi"}, "rht_wrong")
+            raise AssertionError("错误令牌不应通过")
+        except urllib.error.HTTPError as e:
+            assert e.code in (401, 403)
+    finally:
+        st.stop()
