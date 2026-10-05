@@ -1,14 +1,15 @@
 [project]
 name = "hubrelay"
-version = "0.2.12"
-description = "Self-hosted LLM relay/gateway for LAN: multi-upstream key pool, downstream tokens, usage accounting, conformance probing (局域网大模型中转站)"
+version = "0.3.0"
+description = "Self-hosted LLM relay/gateway for LAN: multi-upstream key pool, downstream tokens, usage accounting, conformance probing; TOIP dynamic-password onboarding for DeepSeek Harness plugins (局域网大模型中转站)"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = []
 keywords = ["llm", "gateway", "relay", "proxy", "openai", "anthropic", "one-api",
             "self-hosted", "ollama", "lm-studio", "api-gateway", "key-pool",
-            "chatgpt-proxy", "localai", "中转站", "大模型"]
+            "chatgpt-proxy", "localai", "totp", "otp", "toip", "plugin",
+            "deepseek-harness", "dsh-plugin", "中转站", "大模型"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -21,6 +22,11 @@ classifiers = [
   "Topic :: System :: Networking",
   "Topic :: Software Development :: Libraries",
 ]
+
+[project.urls]
+Homepage = "https://github.com/bilibiliUID1480494301/relay-hub"
+Repository = "https://github.com/bilibiliUID1480494301/relay-hub"
+Issues = "https://github.com/bilibiliUID1480494301/relay-hub/issues"
 
 [project.scripts]
 hubrelay = "relayhub.gateway.__main__:main"

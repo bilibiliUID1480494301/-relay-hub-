@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import sys
 import threading
@@ -19,13 +20,16 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from .. import paths
 from .. import __version__ as relayhub_version
 from . import audit as audit_module
 from . import clients as clients_module
+from . import pluginlogs
 from . import reqlog
+from . import toip as toip_module
 from .router import RelayOutcome, RouterError
 
 ident_module = None  # 未安装客户端扩展包时的占位：身份头整段跳过
@@ -1065,9 +1069,6 @@ class RelayHandler(BaseHTTPRequestHandler):
         reason: str = "",
     ) -> None:
         """写一条请求明细。终端只有一个：本方法不该被同一请求调两次。"""
-        log_path = self.request_log
-        if log_path is None:
-            return
         if identity is not None:
             who = identity.name
         elif self.api_key or (self.tokens and self.tokens.pool.tokens):
@@ -1077,6 +1078,35 @@ class RelayHandler(BaseHTTPRequestHandler):
         # 客户端身份：本请求解出的身份字段（无则全空，reqlog 就不写这些键）
         ident = getattr(self, "_ident", None) or {}
         ident_bad = ident.get("bad", "")
+        latency_ms = (time.monotonic() - started) * 1000
+        request_id = getattr(self, "_current_request_id", "")
+        ip = self._client_ip()
+
+        # 插件日志：**先于 request_log 的开关判断**——`--no-request-log` 是
+        # 「别给这个网关留全局流水」的意思，不该顺带把插件自己的接入记录灭掉。
+        # 两者服务的追问不同（见 pluginlogs 模块头部的三方分工表）。
+        plugin = self._plugin_identity(identity)
+        if plugin is not None:
+            pluginlogs.record(
+                self._plugin_log_home(),
+                plugin["id"],
+                plugin_version=plugin.get("version", ""),
+                token=who,
+                dialect=dialect,
+                model=model,
+                ok=ok,
+                stream=stream,
+                status=status,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                latency_ms=latency_ms,
+                ip=ip,
+                reason=reason,
+            )
+
+        log_path = self.request_log
+        if log_path is None:
+            return
         reqlog.record(
             log_path,
             token=who,
@@ -1091,16 +1121,62 @@ class RelayHandler(BaseHTTPRequestHandler):
             cache_read=cache_read,
             cache_creation=cache_creation,
             cost=cost,
-            request_id=getattr(self, "_current_request_id", ""),
-            ip=self._client_ip(),
+            request_id=request_id,
+            ip=ip,
             ident_user=ident.get("user", ""),
             ident_ver=ident.get("ver", ""),
             ident_dev=ident.get("dev", ""),
             ident_did=ident.get("did", ""),
             ident_src=("bad:" + ident_bad) if ident_bad else ident.get("src", ""),
-            latency_ms=(time.monotonic() - started) * 1000,
+            latency_ms=latency_ms,
             reason=reason,
         )
+
+    # -- 插件身份与插件日志 ------------------------------------------------
+
+    def _plugin_log_home(self) -> Any:
+        """插件日志根目录。允许测试用 server.plugin_log_home 覆盖。"""
+        override = getattr(self.server, "plugin_log_home", None)
+        return override if override is not None else paths.relayhub_home()
+
+    def _plugin_identity(
+        self, identity: DownstreamToken | None = None
+    ) -> dict[str, str] | None:
+        """解出「这个请求属于哪个插件」。解不出返回 None（不写插件日志）。
+
+        优先级：插件自报的头 → 令牌的 TOIP 绑定 → 无。
+
+        为什么令牌绑定要排在头**之后**而不是之前：插件头是插件自己填的，
+        能区分「同一台机器上的两个插件」；令牌绑定只能区分到设备。
+        但头可以伪造，所以它只当分类标签用——**鉴权永远只看令牌**
+        （`_authenticate`），伪造插件头最坏后果是把日志记到隔壁插件名下。
+
+        校验必须走 `toip.sanitize_plugin_id` 同一套白名单：插件 id 会变成
+        **目录名**，`../` 这类值能把日志写到数据根之外。
+        """
+        raw = (
+            self.headers.get(toip_module.PLUGIN_ID_HEADER, "")
+            or self.headers.get(toip_module.PLUGIN_ID_HEADER_GENERIC, "")
+        ).strip()
+        if not raw and identity is not None:
+            raw = toip_module.plugin_of_note(identity.note)
+        if not raw:
+            return None
+        try:
+            plugin_id = toip_module.sanitize_plugin_id(raw)
+        except toip_module.ToipError:
+            # 非法插件 id 不拒请求（它不参与鉴权），只是不记插件日志。
+            self.log_error("忽略非法的插件身份头：%r", raw[:80])
+            return None
+        return {
+            "id": plugin_id,
+            "version": self.headers.get(toip_module.PLUGIN_VERSION_HEADER, "").strip()[:32],
+        }
+
+    @property
+    def toip(self) -> Any:
+        """TOIP 接入服务。未配置站点身份时为 None（端点回 404）。"""
+        return getattr(self.server, "toip", None)
 
     @property
     def event_delay(self) -> float:
@@ -1224,6 +1300,163 @@ class RelayHandler(BaseHTTPRequestHandler):
             api_key=record.token,
             models=models,
         )
+        self._send_json(200, payload)
+
+    # -- TOIP 接入 ---------------------------------------------------------
+
+    def _http_root(self) -> str:
+        """本站对外的 HTTP 根地址（无尾斜杠），用于拼给插件的接入载荷。
+
+        与 `_handle_pair` 同一口径取 Host 头：客户端用哪个地址连上来，
+        就用哪个地址回填它的配置——多网卡/自定义端口/反代前缀都不需要
+        网关猜，也不需要管理员维护一份「对外地址」配置（那是最容易过期的东西）。
+        """
+        host = self.headers.get("Host") or (
+            f"{self.server.server_address[0]}:{self.server.server_address[1]}"
+        )
+        return f"http://{host}"
+
+    def _handle_toip_station(self) -> None:
+        """GET /v1/toip/station：公开的站点 TOIP 能力声明。
+
+        未启用 TOIP 时回 404 而不是 200 + enabled:false——「这个站没有这个
+        功能」与「这个站有这个功能但现在关着」对客户端是同一种处置（换配对码），
+        但 404 让探测方一眼看出该换路子，不必解析 body。
+        """
+        service = self.toip
+        if service is None or not service.enabled():
+            self._error(404, "本网关未启用 TOIP 接入", "not_found_error")
+            return
+        payload = service.station_public()
+        # base_url 一律以本次请求看到的地址为准（station 文件里的 base_url
+        # 只在管理员显式写死时才用，那种场景是跨网段/NAT 后无法从来源推断）。
+        payload["base_url"] = payload.get("base_url") or self._http_root()
+        payload["models"] = len(self.router.models())
+        self._send_json(200, payload)
+
+    def _handle_toip_join(self, path: str) -> None:
+        """POST /v1/toip/join|enroll：动态口令 / 登记口令 → 会话令牌 + 接入载荷。
+
+        成功响应就是「插件自助接入所需的一切」：会话令牌、要写进客户端配置的
+        base URL、可选的模型清单、以及一个 `dsh` 块（客户端就填这个，别的字段
+        是给人看的）。字段命名刻意与 `clients.onboarding` 对齐，让「配对」和
+        「TOIP」两条接入路径在客户端侧可以用同一套解析。
+        """
+        service = self.toip
+        if service is None or not service.enabled():
+            self._error(404, "本网关未启用 TOIP 接入", "not_found_error")
+            return
+        body = self._read_json("openai")
+        if body is None:
+            return
+
+        code = str(body.get("code") or "").strip()
+        ticket = str(body.get("ticket") or "").strip()
+        if path == "/v1/toip/enroll" and not ticket:
+            self._error(400, "enroll 需要登记口令 ticket", "invalid_request_error")
+            return
+        plugin_id = str(body.get("plugin") or body.get("plugin_id") or "").strip()
+        if not plugin_id:
+            self._error(
+                400,
+                "缺少 plugin（插件 id，用于分账与日志目录；建议 dsh-relayhub-bridge）",
+                "invalid_request_error",
+            )
+            return
+        # 设备名**不要**在这里默认成插件 id：那样会盖住 toip._grant 的
+        # 「沿用旧令牌名」回退，导致同一台设备用动态口令重接后被改名
+        # （tokens.json 与日志的 token 列跟着变，历史对不上）。
+        name = str(body.get("name") or body.get("device") or "").strip()
+        client_id = str(body.get("client") or "dsh").strip().lower()
+
+        from .toip import ToipError
+
+        ip = self._client_ip()
+        try:
+            result = service.join(
+                code=code,
+                ticket=ticket,
+                name=name,
+                plugin_id=plugin_id,
+                ip=ip,
+                client_id=client_id,
+            )
+        except ToipError as exc:
+            self._error(
+                403 if "无效" in str(exc) or "不正确" in str(exc) or "过期" in str(exc) else 400,
+                str(exc),
+                "permission_error",
+            )
+            return
+
+        root = self._http_root()
+        models = [
+            {"model_id": model, "context_window": window or None}
+            for model, window in sorted(self.router.models().items())
+            if result.token.allows(model)
+        ]
+        # 复用客户端档案生成通用接入载荷：未知 client_id 会抛 KeyError，
+        # 那不该让已经发出的令牌白丢，所以退化成通用形态。
+        try:
+            payload = clients_module.onboarding(
+                client_id, base_url=root, api_key=result.token_plain, models=models
+            )
+        except KeyError:
+            payload = {
+                "client": client_id,
+                "display_name": client_id,
+                "status": "guided",
+                "inbound": "anthropic-messages",
+                "endpoint": "/v1/messages",
+                "base_url": root,
+                "api_key": result.token_plain,
+                "models": models,
+            }
+
+        payload["protocol"] = toip_module.PROTOCOL
+        payload["version"] = toip_module.PROTOCOL_VERSION
+        current = service.station()
+        payload["station"] = {
+            "id": current.station_id if current else "",
+            "base_url": root,
+        }
+        payload["plugin"] = {
+            "id": result.plugin_id,
+            "version": str(body.get("plugin_version") or "")[:32],
+            # 插件下次重接用的路径与头名：写在响应里，插件不必硬编码。
+            "join_path": "/v1/toip/join",
+            "session_path": "/v1/toip/session",
+            "headers": {
+                "plugin_id": toip_module.PLUGIN_ID_HEADER,
+                "plugin_version": toip_module.PLUGIN_VERSION_HEADER,
+                "station_id": toip_module.STATION_ID_HEADER,
+            },
+        }
+        payload["session"] = {
+            "token": result.token_plain,
+            "token_hint": toip_module.token_hint_of(result.token_plain),
+            "expires_at": float(result.token.expires_at or 0.0),
+            "rotated": result.returned_session,
+        }
+        # DSH 客户端区块：插件的配置面只需要照抄这三个值。
+        # base_url 必须带 /v1——DSH 的 Messages 适配器只在 pathname 不以
+        # /v1 结尾时补 /v1（`messagesApiRoot`），带 /v1 是唯一确定的写法。
+        payload["dsh"] = {
+            "provider": "relayhub",
+            "baseURL": f"{root}/v1",
+            "apiKey": result.token_plain,
+            "models": [
+                {"id": item["model_id"], "contextWindow": item["context_window"] or None}
+                for item in models
+            ],
+        }
+        payload["otp"] = {
+            "algorithm": toip_module.TOTP_ALGORITHM.upper(),
+            "digits": toip_module.TOTP_DIGITS,
+            "period": int(toip_module.TOTP_STEP),
+            # 方便插件在 UI 上提示「还剩几秒」，减少跨窗失败。
+            "seconds_left": round(toip_module.totp_seconds_left(), 1),
+        }
         self._send_json(200, payload)
 
     def _authenticate(self, dialect: str = "anthropic") -> tuple[bool, DownstreamToken | None]:
@@ -1401,6 +1634,32 @@ class RelayHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if path == "/v1/toip/station":
+            # 公开端点：与 /v1/whoami 同级的信息披露——只报「本站支不支持
+            # TOIP、该往哪发口令、口令怎么算」。**不含种子、口令、令牌**，
+            # 所以发现成本与一次 404 等价。
+            self._handle_toip_station()
+            return
+        if path == "/v1/toip/session":
+            # 已接入插件的自查：我是谁、还剩多久、我这个令牌用了多少。
+            # 与 /v1/models 同鉴权口径（走令牌），但只读且不改任何状态。
+            service = self.toip
+            if service is None:
+                self._error(404, "本网关未启用 TOIP 接入", "not_found_error")
+                return
+            authorized, identity = self._authenticate()
+            if not authorized or identity is None:
+                if authorized:
+                    # master 凭证没有「插件身份」，自查没有主语可说；
+                    # 明确 400 比回一份全零的假身份更省排查时间。
+                    self._error(
+                        400,
+                        "TOIP 自查需要下游令牌（master 凭证没有插件身份）",
+                        "invalid_request_error",
+                    )
+                return
+            self._send_json(200, service.describe_session(identity))
+            return
         if path == "/v1/whoami":
             # 官方站自动识别（App 填个网址就能探测）：公开、只报协议身份与
             # 能力开关，不含模型清单、凭证线索与计数——探测成本与 404 相同。
@@ -1468,6 +1727,12 @@ class RelayHandler(BaseHTTPRequestHandler):
             # 暴露面由配对窗口守着——没有活跃窗口时直接拒绝，常态下这个
             # 路径等价于不存在（pairing.py 的安全模型）。
             self._handle_pair()
+            return
+        if path in ("/v1/toip/join", "/v1/toip/enroll"):
+            # TOIP 接入端点同样在鉴权之前：来接入的插件还没有令牌。
+            # 两个路径的区别只是「拿什么换令牌」——join 收动态口令或登记口令，
+            # enroll 只收一次性登记口令。暴露面由口令窗口 + 爆破闸门守着。
+            self._handle_toip_join(path)
             return
         if path == "/v1/embeddings":
             self._handle_embeddings()
@@ -2224,6 +2489,8 @@ class RelayServer(ThreadingHTTPServer):
         queue_wait: float = 30.0,
         policy: Any = None,
         pair_mode: str = "code",
+        toip: Any = None,
+        plugin_log_home: Path | None = None,
     ) -> None:
         if event_delay < 0:
             raise ValueError("event_delay 不能为负")
@@ -2280,11 +2547,40 @@ class RelayServer(ThreadingHTTPServer):
         # 登录会话（内存态）：sid -> (user_id, expires)。重启全员下线，对面板是特性。
         self.sessions: dict[str, tuple[str, float]] = {}
         self.session_lock = threading.Lock()
+        # TOIP 接入服务（toip.py）。None = 本网关未启用 TOIP，/v1/toip/* 全 404。
+        # 服务本身按需从数据根读 station/tickets 文件，所以 CLI 只需传一个
+        # ToipService 实例，不必把两个路径散到构造签名里。
+        self.toip = toip
+        # 插件日志根（pluginlogs/ 的父目录）。None = 用默认数据根；
+        # 测试传 tmp_path 让插件日志不落进真实数据根。
+        self.plugin_log_home = plugin_log_home
 
     @property
     def base_url(self) -> str:
         host, port = self.server_address[0], self.server_address[1]
         return f"http://{host}:{port}"
+
+    def toip_summary(self) -> dict[str, Any]:
+        """给发现应答器用的 TOIP 能力块（放 UDP 包里的那一小份）。
+
+        刻意比 `GET /v1/toip/station` 更瘦：UDP 应答要挤进 4096 字节的
+        接收缓冲，而且发现阶段只需要「支不支持 + 往哪问」。细节让客户端
+        发现之后再走 HTTP 拿——这也让应答包不会随端点增多而膨胀。
+        """
+        service = self.toip
+        if service is None:
+            return {"enabled": False}
+        public = service.station_public()
+        if not public.get("enabled"):
+            return {"enabled": False}
+        return {
+            "enabled": True,
+            "protocol": public.get("protocol", toip_module.PROTOCOL),
+            "version": public.get("version", toip_module.PROTOCOL_VERSION),
+            "station_id": public.get("station_id", ""),
+            "join": "/v1/toip/join",
+            "station": "/v1/toip/station",
+        }
 
 
 def demo_pool() -> ChannelPool:

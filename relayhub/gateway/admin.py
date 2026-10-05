@@ -32,7 +32,9 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from .. import paths
 from . import audit as audit_module
+from . import pluginlogs as pluginlogs_module
 from . import reqlog as reqlog_module
+from . import toip as toip_module
 from . import upstream
 from .policy import KIND_DEVICE, KIND_IP, PolicyError, PolicyStore
 from .users import RedeemStore, UserError, UserPool, hash_password
@@ -421,6 +423,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/requests": self._requests_state,
             "/api/usage": self._usage_state,
             "/api/audit": self._audit_state,
+            "/api/plugins": self._plugins_state,
+            "/api/toip": self._toip_state,
             "/api/policy": lambda: self.server.policy.state(),
         }
         if path in read_routes:
@@ -1139,6 +1143,79 @@ class AdminHandler(BaseHTTPRequestHandler):
             "entries": audit_module.tail(self.server.audit_path, limit=limit),  # type: ignore[attr-defined]
         }
 
+    def _plugins_state(self) -> dict[str, Any]:
+        """插件日志总览：每个插件的接入事件 + 调用流水汇总 + 最近明细。
+
+        `?plugin=<id>` 给单个插件的详情（接入事件、汇总、最近流水）；
+        不带参数给全部插件的一行总览。管理台「插件」页就吃这一个接口。
+
+        这里**只读**：清理走 `toip logs prune`，删目录走 `toip logs forget`
+        （带 --yes）。插件日志是「某个插件来过」的证据，不该有一个能被
+        误点的按钮把它删掉——删除必须是一次有意识的操作。
+        """
+        query = parse_qs(urlsplit(self.path).query)
+        home = self.server.plugin_log_home  # type: ignore[attr-defined]
+        plugin = (query.get("plugin") or [""])[0].strip()
+        limit = min(int((query.get("limit") or ["50"])[0] or 50), 2000)
+        if plugin:
+            entries = pluginlogs_module.tail(home, plugin, limit=limit)
+            return {
+                "root": str(pluginlogs_module.root(home)),
+                "plugin": plugin,
+                "events": pluginlogs_module.events(home, plugin, limit=200),
+                "summary": pluginlogs_module.summarize(
+                    pluginlogs_module.tail(home, plugin, limit=200_000)
+                ),
+                "entries": entries,
+            }
+        return {
+            "root": str(pluginlogs_module.root(home)),
+            "plugins": pluginlogs_module.list_plugins(home),
+            "retention_days": pluginlogs_module.DEFAULT_RETENTION_DAYS,
+        }
+
+    def _toip_state(self) -> dict[str, Any]:
+        """TOIP 只读状态：站点身份 + 通行证清单 + 现行动态口令。
+
+        **刻意不下发口令种子**：管理台是浏览器面，种子等于该站点的全部
+        接入能力，它只该待在磁盘上的 toip.json 里。这里只给「当前口令」
+        （30 秒后就过期，泄露面极小）和「还剩几秒」，够管理员核对与转告。
+        签发/吊销通行证也刻意只走 CLI——那条路上登记口令只打印一次，
+        不经浏览器、不进历史、不留缓存。
+        """
+        station = toip_module.load_station(self.server.toip_station_path)  # type: ignore[attr-defined]
+        tickets = toip_module.TicketStore(self.server.toip_tickets_path).list()  # type: ignore[attr-defined]
+        payload: dict[str, Any] = {
+            "enabled": station is not None,
+            "tickets": [
+                {
+                    "ticket_id": t.ticket_id,
+                    "name": t.name,
+                    "hint": t.ticket_hint,
+                    "plugins": list(t.plugins),
+                    "enabled": t.enabled,
+                    "used_count": t.used_count,
+                    "last_used": t.last_used,
+                    "last_ip": t.last_ip,
+                    "expires_at": t.expires_at,
+                    "bound_token": bool(t.token_id),
+                }
+                for t in tickets
+            ],
+        }
+        if station is not None:
+            payload["station"] = {
+                "station_id": station.station_id,
+                "name": station.name,
+                "base_url": station.base_url,
+                "current_code": toip_module.totp_now(station.secret_bytes),
+                "seconds_left": round(toip_module.totp_seconds_left(), 1),
+                "period": int(toip_module.TOTP_STEP),
+                "join_path": "/v1/toip/join",
+                "station_path": "/v1/toip/station",
+            }
+        return payload
+
 
 
 class AdminServer(ThreadingHTTPServer):
@@ -1163,6 +1240,9 @@ class AdminServer(ThreadingHTTPServer):
         audit_path: Path | None = None,
         tokens_path: Path | None = None,
         requests_log_path: Path | None = None,
+        plugin_log_home: Path | None = None,
+        toip_station_path: Path | None = None,
+        toip_tickets_path: Path | None = None,
     ) -> None:
         # 绑非回环地址却不要凭证 = 把号池管理面挂到内网上，先拦下来。
         if not is_loopback(address[0]) and not token:
@@ -1178,6 +1258,11 @@ class AdminServer(ThreadingHTTPServer):
         # 统一控制台的数据面：令牌 / 请求明细（默认走标准数据根）
         self.tokens_path = tokens_path or paths.tokens_path()
         self.requests_log_path = requests_log_path or paths.requests_log_path()
+        # 插件日志根：与数据面同一份（按插件分目录），控制台只读它。
+        self.plugin_log_home = plugin_log_home or paths.relayhub_home()
+        # TOIP 站点身份与通行证：控制台只读展示（签发/吊销走 CLI）。
+        self.toip_station_path = toip_station_path or paths.toip_station_path()
+        self.toip_tickets_path = toip_tickets_path or paths.toip_tickets_path()
         # 接入策略（IP/设备 拉黑与优先名单）：与网关数据面共享同一文件，
         # 控制台改完网关下一请求即生效（PolicyStore 指纹热加载）
         self.policy = PolicyStore(paths.policy_path())
@@ -1347,6 +1432,8 @@ display:none;border:1px solid var(--line);background:var(--panel)}
   <span class="gap"></span>
   <button data-tab="requests">请求</button>
   <button data-tab="usage">用量</button>
+  <button data-tab="plugins">插件</button>
+  <button data-tab="toip">动态口令</button>
   <button data-tab="audit">审计</button>
 </nav>
 
@@ -1559,6 +1646,47 @@ display:none;border:1px solid var(--line);background:var(--panel)}
   </div>
   <h2 style="margin-top:12px">按日</h2>
   <table><tbody id="u-day"></tbody></table>
+</section>
+</div>
+
+<div class="pane" id="pane-plugins" style="display:none">
+<section class="panel">
+  <h2>插件日志（按插件分账）</h2>
+  <div class="row">
+    <button id="pl-load">刷新</button>
+  </div>
+  <p class="hint">每个插件一个目录。插件在请求里带 <code>X-DSH-Plugin-Id</code>
+    头（或使用 TOIP 发放的会话令牌）时，这次调用会同时记进
+    <code>requests.&lt;日期&gt;.jsonl</code>（按令牌的全局流水）与
+    <code>pluginlogs/&lt;插件&gt;/&lt;日期&gt;.jsonl</code>（按插件的分账）。
+    流水只记元数据，<strong>永不记对话内容</strong>。清理用
+    <code>hubrelay toip logs prune</code>。</p>
+  <div style="overflow-x:auto;margin-top:10px"><table>
+    <thead><tr><th>插件</th><th>文件</th><th>字节</th><th>首次接入</th><th>最后活动</th></tr></thead>
+    <tbody id="pl-rows"></tbody>
+  </table></div>
+  <p class="hint" id="pl-root"></p>
+</section>
+<div id="pl-detail"></div>
+</div>
+
+<div class="pane" id="pane-toip" style="display:none">
+<section class="panel">
+  <h2>TOIP 动态口令接入</h2>
+  <div class="row"><button id="tp-load">刷新</button></div>
+  <div id="tp-state" style="margin-top:10px"></div>
+</section>
+<section class="panel">
+  <h2>通行证</h2>
+  <div style="overflow-x:auto"><table>
+    <thead><tr><th>名称</th><th>提示</th><th>允许插件</th><th>状态</th><th>接入次数</th>
+      <th>最后使用</th><th>来源 IP</th><th>有效期</th><th>会话</th></tr></thead>
+    <tbody id="tp-rows"></tbody>
+  </table></div>
+  <p class="hint">登记口令（明文）只在 <code>hubrelay toip ticket</code> 打印那一次，
+    不落盘、不经浏览器。轮换站点口令种子（旧动态口令立刻作废、已发出的会话令牌不受影响）：
+    <code>hubrelay toip station --force</code>。吊销通行证并可一并收回会话令牌：
+    <code>hubrelay toip revoke &lt;名称&gt;</code>。</p>
 </section>
 </div>
 
@@ -1797,6 +1925,8 @@ function loadPane(name){
   if(name==='users'){loadUsers();return;}
   if(name==='requests'){loadRequests();return;}
   if(name==='usage'){loadUsage();return;}
+  if(name==='plugins'){loadPlugins();return;}
+  if(name==='toip'){loadToip();return;}
   if(name==='audit'){loadAudit();return;}
 }
 
@@ -2174,6 +2304,110 @@ function loadUsage(){
 document.getElementById('u-load').onclick=loadUsage;
 
 // ---- 审计 ----
+
+// ---- 插件日志 ----
+
+function loadPlugins(){
+  api('GET','/api/plugins').then(function(s){
+    var rows=(s.plugins||[]).map(function(p){
+      var seen=p.first_seen?new Date(p.first_seen*1000).toLocaleString():'—';
+      var last=p.last_activity?new Date(p.last_activity*1000).toLocaleString():'—';
+      return '<tr><td><a href="#" data-plugin="'+esc(p.plugin_id)+'" class="pl-open mono">'+
+        esc(p.plugin_id)+'</a></td><td>'+p.files+'</td><td>'+p.bytes+'</td>'+
+        '<td class="mono">'+esc(seen)+'</td><td class="mono">'+esc(last)+'</td></tr>';
+    }).join('');
+    document.getElementById('pl-rows').innerHTML=rows||
+      '<tr><td colspan="5" style="color:var(--muted)">（还没有任何插件日志：插件带着 '+
+      'X-DSH-Plugin-Id 头调用过一次之后就会出现）</td></tr>';
+    document.getElementById('pl-detail').innerHTML='';
+    document.getElementById('pl-root').textContent=s.root?('日志根：'+s.root):'';
+    document.querySelectorAll('.pl-open').forEach(function(a){
+      a.onclick=function(ev){ev.preventDefault();loadPluginDetail(a.dataset.plugin);};
+    });
+  }).catch(function(e){toast('加载失败：'+e.message,false);});
+}
+document.getElementById('pl-load').onclick=loadPlugins;
+
+function loadPluginDetail(plugin){
+  api('GET','/api/plugins?plugin='+encodeURIComponent(plugin)).then(function(s){
+    var w=s.summary.window||{};
+    var head='<h3 class="mono">'+esc(plugin)+'</h3>'+
+      '<div class="cards">'+
+      tcard('调用','ok '+w.ok+' / failed '+w.failed)+
+      tcard('Tokens','in '+w.tokens_in+' / out '+w.tokens_out)+
+      tcard('平均延迟',(w.avg_latency_ms||0)+' ms')+
+      '</div>';
+    var models=Object.keys(s.summary.by_model||{}).map(function(m){
+      var b=s.summary.by_model[m];
+      return '<tr><td class="mono">'+esc(m)+'</td><td>'+b.requests+'</td><td>'+b.ok+'</td>'+
+        '<td>'+b.failed+'</td><td>'+b.tokens_in+'</td><td>'+b.tokens_out+'</td></tr>';
+    }).join('')||'<tr><td colspan="6" style="color:var(--muted)">（无）</td></tr>';
+    var events=(s.events||[]).map(function(e){
+      return '<tr><td class="mono">'+esc(new Date(e.ts*1000).toLocaleString())+'</td>'+
+        '<td><span class="tag t-on">'+esc(e.event)+'</span></td><td>'+
+        esc(Object.keys(e).filter(function(k){return k!=='ts'&&k!=='schema'&&k!=='event';})
+          .map(function(k){return k+'='+e[k];}).join('　'))+'</td></tr>';
+    }).join('')||'<tr><td colspan="3" style="color:var(--muted)">（无接入事件）</td></tr>';
+    var entries=(s.entries||[]).slice().reverse().map(function(e){
+      return '<tr><td class="mono">'+esc(new Date(e.ts*1000).toLocaleString())+'</td>'+
+        '<td>'+esc(e.model||'-')+'</td><td>'+esc(e.dialect||'-')+'</td>'+
+        '<td>'+(e.ok?'<span class="tag t-on">ok</span>':'<span class="tag t-off">err</span>')+'</td>'+
+        '<td>'+esc(e.status)+'</td><td>'+e.tokens_in+' / '+e.tokens_out+'</td>'+
+        '<td>'+esc(e.latency_ms)+' ms</td><td>'+esc(e.reason||'')+'</td></tr>';
+    }).join('')||'<tr><td colspan="8" style="color:var(--muted)">（无调用记录）</td></tr>';
+    document.getElementById('pl-detail').innerHTML=head+
+      '<section class="panel"><h2>接入事件</h2><table><thead><tr>'+
+      '<th>时间</th><th>事件</th><th>详情</th></tr></thead><tbody>'+events+'</tbody></table></section>'+
+      '<section class="panel"><h2>按模型</h2><table><thead><tr><th>模型</th><th>请求</th>'+
+      '<th>ok</th><th>failed</th><th>in</th><th>out</th></tr></thead><tbody>'+models+
+      '</tbody></table></section>'+
+      '<section class="panel"><h2>最近调用（流水只记元数据，不含对话内容）</h2>'+
+      '<div style="overflow-x:auto"><table><thead><tr><th>时间</th><th>模型</th><th>协议</th>'+
+      '<th>结果</th><th>状态</th><th>tokens in/out</th><th>延迟</th><th>原因</th></tr></thead>'+
+      '<tbody>'+entries+'</tbody></table></div></section>';
+  }).catch(function(e){toast('加载失败：'+e.message,false);});
+}
+
+function tcard(label,value){
+  return '<div class="card"><span>'+esc(label)+'</span><b>'+esc(value)+'</b></div>';
+}
+
+// ---- 动态口令（TOIP） ----
+
+function loadToip(){
+  api('GET','/api/toip').then(function(s){
+    var box=document.getElementById('tp-state');
+    if(!s.enabled){
+      box.innerHTML='<p class="hint">本站还没启用 TOIP。在网关机器上执行：'+
+        '<code>hubrelay toip station</code> 创建站点身份，再 '+
+        '<code>hubrelay toip ticket --name &lt;设备&gt; --plugins dsh-relayhub-bridge</code> '+
+        '签一枚通行证。</p>';
+    }else{
+      var st=s.station;
+      box.innerHTML='<div class="cards">'+
+        tcard('站点',st.name)+
+        tcard('当前动态口令',st.current_code+'（'+st.seconds_left+'s）')+
+        tcard('站点 id',st.station_id)+
+        '</div><p class="hint">口令 30 秒滚动一次，容错 ±1 窗口。'+
+        '口令种子不下发到浏览器——它只存在网关磁盘上的 toip.json 里；'+
+        '签发/吊销通行证请用 CLI。'+
+        (st.base_url?(' 对外地址：<code>'+esc(st.base_url)+'</code>'):'')+'</p>';
+    }
+    var rows=(s.tickets||[]).map(function(t){
+      var when=t.last_used?new Date(t.last_used*1000).toLocaleString():'从未';
+      var exp=t.expires_at?new Date(t.expires_at*1000).toLocaleString():'不过期';
+      return '<tr><td>'+esc(t.name)+'</td><td class="mono">'+esc(t.hint)+'</td>'+
+        '<td class="mono">'+esc((t.plugins||[]).join(', ')||'*')+'</td>'+
+        '<td>'+(t.enabled?'<span class="tag t-on">启用</span>':'<span class="tag t-off">停用</span>')+'</td>'+
+        '<td>'+t.used_count+'</td><td class="mono">'+esc(when)+'</td>'+
+        '<td class="mono">'+esc(t.last_ip||'—')+'</td><td class="mono">'+esc(exp)+'</td>'+
+        '<td>'+(t.bound_token?'<span class="tag t-on">已绑定会话</span>':'—')+'</td></tr>';
+    }).join('');
+    document.getElementById('tp-rows').innerHTML=rows||
+      '<tr><td colspan="9" style="color:var(--muted)">（还没有通行证）</td></tr>';
+  }).catch(function(e){toast('加载失败：'+e.message,false);});
+}
+document.getElementById('tp-load').onclick=loadToip;
 
 function loadAudit(){
   var limit=document.getElementById('al-limit').value;

@@ -18,12 +18,16 @@ import json
 import socket
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 PROBE_MAGIC = b"RELAYHUB-DISCOVER-v1"
+# v2 探测包：与 v1 同样只回元数据，但应答里带 toip 能力块。
+# 两个魔数都接受，是为了让「只想发现、不想接入」的 v1 老客户端不被弄坏。
+PROBE_MAGIC_V2 = b"RELAYHUB-DISCOVER-v2"
+PROBE_MAGICS = (PROBE_MAGIC, PROBE_MAGIC_V2)
 DISCOVERY_PORT = 8795
-RECV_BUFFER = 2048
+RECV_BUFFER = 4096
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,9 @@ class GatewayInfo:
     port: int  # 数据面端口（HTTP）
     models: int
     pairing_open: bool
+    # TOIP 能力块（v2 应答才有）；v1 应答这里为空。
+    # 形状与 GET /v1/toip/station 的公开部分一致，客户端两处共用一套解析。
+    toip: dict[str, Any] = field(default_factory=dict)
 
 
 class DiscoveryResponder(threading.Thread):
@@ -52,12 +59,14 @@ class DiscoveryResponder(threading.Thread):
         pairing_open: Callable[[], bool],
         port: int = DISCOVERY_PORT,
         clock: Callable[[], float] = time.time,
+        toip_info: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(daemon=True, name="relayhub-discovery")
         self.name_label = name
         self.data_port = data_port
         self._models_count = models_count
         self._pairing_open = pairing_open
+        self._toip_info = toip_info
         self._clock = clock
         self._stop_event = threading.Event()  # 不能叫 _stop：会和 Thread._stop() 撞名，join 收尾时 TypeError
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -65,6 +74,30 @@ class DiscoveryResponder(threading.Thread):
         self._sock.bind(("", port))
         self._sock.settimeout(0.5)
         self.port = self._sock.getsockname()[1]
+
+    def reply_for(self, probe: bytes) -> dict[str, Any] | None:
+        """按探测包版本生成应答载荷；不是我们的探测则返回 None。
+
+        单独抽成方法是为了让测试能直接验载荷内容，不必真的发 UDP 包。
+        **v1 探测拿不到 toip 块**——老客户端的解析器如果对未知键敏感，
+        多给字段反而是破坏；能力声明只对问了的人给。
+        """
+        stripped = probe.strip()
+        if stripped not in PROBE_MAGICS:
+            return None
+        reply: dict[str, Any] = {
+            "protocol": "relay-hub",
+            "name": self.name_label,
+            "port": self.data_port,
+            "models": int(self._models_count()),
+            "pairing": bool(self._pairing_open()),
+        }
+        if stripped == PROBE_MAGIC_V2 and self._toip_info is not None:
+            try:
+                reply["toip"] = dict(self._toip_info())
+            except Exception:  # noqa: BLE001 - 能力声明失败不该让发现整体哑掉
+                reply["toip"] = {"enabled": False}
+        return reply
 
     def run(self) -> None:
         while not self._stop_event.is_set():
@@ -74,15 +107,9 @@ class DiscoveryResponder(threading.Thread):
                 continue
             except OSError:
                 break  # stop() 关了套接字
-            if data.strip() != PROBE_MAGIC:
+            reply = self.reply_for(data)
+            if reply is None:
                 continue  # 不是我们的探测：静默忽略，不回包不给探测者任何信息
-            reply: dict[str, Any] = {
-                "protocol": "relay-hub",
-                "name": self.name_label,
-                "port": self.data_port,
-                "models": int(self._models_count()),
-                "pairing": bool(self._pairing_open()),
-            }
             try:
                 self._sock.sendto(json.dumps(reply).encode("utf-8"), addr)
             except OSError:
@@ -97,18 +124,26 @@ class DiscoveryResponder(threading.Thread):
 
 
 def discover(
-    *, timeout: float = 3.0, port: int = DISCOVERY_PORT
+    *,
+    timeout: float = 3.0,
+    port: int = DISCOVERY_PORT,
+    want_toip: bool = True,
 ) -> list[GatewayInfo]:
-    """广播探测，收集 timeout 秒内的应答。同一 (host, port) 只留一条。"""
+    """广播探测，收集 timeout 秒内的应答。同一 (host, port) 只留一条。
+
+    want_toip=True（默认）发 v2 探测包，应答里会带 TOIP 能力块；
+    只想知道「这个网段有几个中转站」时传 False 发 v1 包，载荷更小。
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.bind(("", 0))
     sock.settimeout(0.3)
+    probe = PROBE_MAGIC_V2 if want_toip else PROBE_MAGIC
     deadline = time.monotonic() + timeout
     try:
         for target in _broadcast_targets(port):
             try:
-                sock.sendto(PROBE_MAGIC, target)
+                sock.sendto(probe, target)
             except OSError:
                 continue  # 某个接口没有广播路由很正常，别的地址会补上
         found: dict[tuple[str, int], GatewayInfo] = {}
@@ -137,12 +172,14 @@ def _parse_reply(data: bytes, host: str) -> GatewayInfo | None:
     port = int(payload.get("port") or 0)
     if not (0 < port < 65536):
         return None
+    raw_toip = payload.get("toip")
     return GatewayInfo(
         name=str(payload.get("name") or "unnamed"),
         host=host,
         port=port,
         models=int(payload.get("models") or 0),
         pairing_open=bool(payload.get("pairing")),
+        toip=dict(raw_toip) if isinstance(raw_toip, dict) else {},
     )
 
 

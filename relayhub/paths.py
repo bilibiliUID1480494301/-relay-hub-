@@ -59,6 +59,34 @@ def audit_path() -> Path:
     return relayhub_home() / "audit.jsonl"
 
 
+def toip_station_path() -> Path:
+    """TOIP 站点身份（station id + 动态口令种子）。
+
+    口令种子等价于「该站点全部接入能力」，所以它与号池（上游密钥）、
+    令牌（下游凭证）分开成第三个文件：三者的轮换节奏与暴露面互不相同，
+    混在一个文件里会让「轮换口令」这种纯运维动作有碰到密钥的风险。
+    """
+    return relayhub_home() / "toip.json"
+
+
+def toip_tickets_path() -> Path:
+    """TOIP 通行证文件（登记口令的哈希 + 插件白名单 + 绑定关系）。
+
+    落盘只存 SHA-256 与尾 4 位提示（与 tokens.json 同纪律），明文只在
+    `hubrelay toip ticket` 打印那一次。
+    """
+    return relayhub_home() / "toip_tickets.json"
+
+
+def plugin_logs_root() -> Path:
+    """插件日志根目录（<home>/pluginlogs/<plugin_id>/…）。
+
+    与 requests.jsonl（全局、按令牌分账）分开的理由见 gateway/pluginlogs.py：
+    插件是「一个整体」，它的接入事件与调用流水需要能一个目录读完。
+    """
+    return relayhub_home() / "pluginlogs"
+
+
 def users_path() -> Path:
     """公网用户文件（用户/密码哈希/额度/计费规则）。"""
     return relayhub_home() / "users.json"

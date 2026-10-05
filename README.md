@@ -27,8 +27,19 @@ third-party runtime dependencies.
   credential — RAG / text tools work out of the box.
 - **Pairing**: out-of-band pairing codes (single-use, expiring) + optional LAN
   zero-input pairing.
+- **TOIP dynamic-password onboarding**: a plugin joins with *just a URL + a
+  rolling 6-digit code* (RFC 6238 TOTP) — no `pair begin`, no ticket to beg for.
+  `/v1/toip/join` returns the session token, the exact `baseURL` to write, and
+  the selectable model list in one call. LAN discovery (UDP v2 probe) already
+  carries the TOIP capability, so a client can find the station and its join
+  endpoint from a single broadcast.
+- **Per-plugin log accounting**: each plugin gets its own log directory
+  (`pluginlogs/<plugin_id>/`), written alongside — not instead of — the global
+  request log. `X-DSH-Plugin-Id` tags the traffic; a TOIP-issued token is
+  already bound to a plugin, so tagging works even without the header.
 - **Admin console**: local web UI for channels / tokens / policies / request log /
-  usage / audit — with an EN/中文 toggle in the header.
+  usage / audit / **plugins** / **dynamic password** — with an EN/中文 toggle in
+  the header.
 - **Conformance probe**: run compliance probes against any compatible gateway.
 - **Request audit**: control-plane audit log and (redacted) request details.
 
@@ -42,9 +53,180 @@ third-party runtime dependencies.
   `POST /v1/chat/completions`、`POST /v1/embeddings`、`POST /v1/responses`
   （OpenAI，含流式；新版 IDE/Agent 客户端开箱即用），同一令牌多种鉴权头都认。
 - **配对发放** Pairing：带外配对码（成功即焚、限次）+ 可选的局域网免码配对。
-- **管理控制台** Admin console：本地网页，管理渠道/令牌/策略/请求明细/用量/审计。
+- **TOIP 动态口令接入**：插件只要「一个网址 + 一枚滚动 6 位口令」（RFC 6238 TOTP）
+  就能接入——不需要管理员先 `pair begin`，也不需要找人要配对码。
+  `POST /v1/toip/join` 一次调用就回齐会话令牌、要写进客户端的 `baseURL`
+  和可选模型清单。局域网发现（UDP v2 探测包）直接带上 TOIP 能力块，
+  客户端一次广播就能拿到站点地址与接入入口。
+- **按插件分账的插件日志**：每个插件一个目录（`pluginlogs/<插件 id>/`），
+  与全局请求明细**并行**写而不是取代它。`X-DSH-Plugin-Id` 头是分账标签；
+  TOIP 发出的令牌本身就绑定了插件，所以不带这个头也能分账。
+- **管理控制台** Admin console：本地网页，管理渠道/令牌/策略/请求明细/用量/审计/**插件**/**动态口令**。
 - **一致性探测** Conformance probe：对着任意兼容网关跑合规探测，抓出不合规实现。
 - **请求审计** Request audit：控制面操作审计与请求明细（脱敏）。
+
+## TOIP 动态口令接入 (English)
+
+**TOIP** (Time-based One-time password Ingestion Protocol) is the onboarding
+path built for *plugins* rather than for humans with a console. The older
+pairing flow is deliberately manual and single-use; that is the right shape for
+"a person adds a phone", and the wrong shape for "a plugin on ten machines
+rejoins after a reinstall".
+
+> Full wire specification (EN + 中文): [`docs/TOIP.md`](./docs/TOIP.md)
+
+```bash
+# 1) one-time, on the gateway: establish the station identity
+hubrelay toip station --name lab-hub
+#    prints the current 6-digit code and an otpauth:// URI (any TOTP app works)
+
+# 2) one-time per device: issue a ticket (the enrollment secret is shown ONCE)
+hubrelay toip ticket --name dsh-laptop --plugins dsh-relayhub-bridge
+
+# 3) the plugin joins with either credential
+#    ticket  -> first contact
+#    code    -> rejoin (rotates the same token)
+curl -s http://192.168.1.10:8799/v1/toip/join \
+  -H 'content-type: application/json' \
+  -d '{"code":"123456","plugin":"dsh-relayhub-bridge"}'
+```
+
+The response contains a `dsh` block ready for a DeepSeek Harness provider:
+
+```json
+{
+  "protocol": "toip", "version": 1,
+  "base_url": "http://192.168.1.10:8799",
+  "models": [{"model_id": "deepseek-v4-pro", "context_window": 1000000}],
+  "dsh": {
+    "provider": "relayhub",
+    "baseURL": "http://192.168.1.10:8799/v1",
+    "apiKey": "rht_…",
+    "models": [{"id": "deepseek-v4-pro", "contextWindow": 1000000}]
+  },
+  "session": {"token": "rht_…", "rotated": false},
+  "otp": {"algorithm": "SHA1", "digits": 6, "period": 30, "seconds_left": 21.4}
+}
+```
+
+`baseURL` always ends in `/v1`: the DeepSeek Messages adapter only appends `/v1`
+when the path does **not** already end with it.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /v1/toip/station` | none | Capability advertisement. **Never** contains the seed, a code, or a token. `404` when TOIP is off. |
+| `POST /v1/toip/join` | code or ticket | Exchange a credential for a session token + onboarding payload. |
+| `POST /v1/toip/enroll` | ticket only | First-contact enrollment (a code alone will not enroll a new plugin). |
+| `GET /v1/toip/session` | token | Self-check: which plugin am I, when do I expire, how much have I used. |
+
+Operational properties worth knowing:
+
+- **Rotating the station secret does not disturb live plugins.**
+  `hubrelay toip station --force` invalidates every *code* immediately, while
+  already-issued session tokens keep working. That is the whole point of
+  choosing a rotatable shared secret over a one-shot pairing code.
+- **Joining is idempotent per device.** A code-based rejoin revokes the previous
+  session token and issues a new one — plaintext tokens are only stored as
+  SHA-256, so "issue it again" is the only honest way to hand one out twice.
+- **Attempts are rate-limited per source IP** (8 per 5-minute window) and every
+  rejection is written to the audit log as `toip.reject`.
+- **The code lives 30 seconds** with ±1 window of clock-drift tolerance. A
+  gateway and client whose clocks differ by more than 30 s will fail; the error
+  message says so explicitly rather than blaming the key.
+
+### Per-plugin logs
+
+Each plugin gets `pluginlogs/<plugin_id>/<YYYYMMDD>.jsonl` (calls) plus
+`events.jsonl` (enrollments, rotations, rejections) and a `schema.json`
+self-description. The global `requests.<date>.jsonl` is still written, so
+existing tooling keeps working — the two answer different questions:
+
+| File | Subject | Answers | Rotation |
+|---|---|---|---|
+| `audit.jsonl` | admin actions | "who changed the config, when" | never (append-only) |
+| `requests.<date>.jsonl` | token (device) | "how much did this device use" | daily |
+| `pluginlogs/<id>/*` | plugin | "what did this plugin do overall" | daily + retention |
+
+```bash
+hubrelay toip logs list                       # every plugin with logs
+hubrelay toip logs show dsh-relayhub-bridge   # events + summary + recent calls
+hubrelay toip logs prune --days 30            # drop old call logs (events are kept)
+hubrelay toip revoke dsh-laptop               # revoke ticket + reclaim its token
+```
+
+Log lines are metadata only — model, dialect, status, token counts, latency, IP.
+**Prompt and completion text are never written** (enforced by the writer's
+signature and a key whitelist, both covered by tests).
+
+## TOIP 动态口令接入（中文）
+
+**TOIP**（Time-based One-time password Ingestion Protocol）是给**插件**准备的接入
+通道，不是给「坐在控制台前的人」准备的。老的配对流程刻意做成手动 + 一次性——
+那对「人给手机加一台设备」是对的，对「插件装在十台机器上、重装后要自己回来」
+就是错的。
+
+> 完整线协议规范（中英对照）：[`docs/TOIP.md`](./docs/TOIP.md)
+
+```bash
+# 1) 网关侧一次性：建立站点身份
+hubrelay toip station --name lab-hub
+#    打印当前 6 位口令与 otpauth:// 链接（手机上任一验证器 App 都能读）
+
+# 2) 每台设备一次性：签一枚通行证（登记口令只显示这一次）
+hubrelay toip ticket --name dsh-laptop --plugins dsh-relayhub-bridge
+
+# 3) 插件拿任一凭证接入
+#    ticket -> 首接
+#    code   -> 重接（轮换同一枚令牌）
+curl -s http://192.168.1.10:8799/v1/toip/join \
+  -H 'content-type: application/json' \
+  -d '{"code":"123456","plugin":"dsh-relayhub-bridge"}'
+```
+
+响应里的 `dsh` 块可以直接喂给 DeepSeek Harness 的 provider（见上方 JSON）。
+`baseURL` 一定以 `/v1` 结尾——DSH 的 Messages 适配器只在 pathname **不**以
+`/v1` 结尾时才补 `/v1`。
+
+| 端点 | 鉴权 | 用途 |
+|---|---|---|
+| `GET /v1/toip/station` | 无 | 能力声明。**绝不含**种子、口令、令牌；未启用 TOIP 时 404。 |
+| `POST /v1/toip/join` | 口令或通行证 | 换会话令牌 + 接入载荷。 |
+| `POST /v1/toip/enroll` | 仅通行证 | 首接登记（只有动态口令不能登记新插件）。 |
+| `GET /v1/toip/session` | 令牌 | 自查：我是哪个插件、何时过期、用了多少。 |
+
+几个值得知道的运维性质：
+
+- **轮换站点口令种子不影响正在跑的插件。** `hubrelay toip station --force`
+  让所有**口令**立刻作废，而已经发出的会话令牌照常工作——这正是「可轮换的
+  共享秘密」相对「一次性配对码」的全部价值。
+- **接入是按设备幂等的。** 用口令重接会作废旧会话令牌并发新枚——令牌明文
+  落盘只存 SHA-256，拿不回原文，所以「再发一次」是唯一诚实的做法。
+- **按来源 IP 限次**（5 分钟窗口内 8 次），每次拒绝都写 `toip.reject` 审计。
+- **口令 30 秒滚动**，容错 ±1 个窗口。网关与插件时钟相差超过 30 秒会失败，
+  报错里会明说这一点，而不是把锅甩给密钥。
+
+### 插件日志
+
+每个插件有 `pluginlogs/<插件 id>/<YYYYMMDD>.jsonl`（调用流水）+
+`events.jsonl`（登记/轮换/被拒）+ `schema.json`（目录自述）。全局
+`requests.<日期>.jsonl` 仍然照写，老工具不受影响——两者回答不同问题：
+
+| 文件 | 主语 | 回答 | 轮转 |
+|---|---|---|---|
+| `audit.jsonl` | 管理员动作 | 「谁什么时候改了配置」 | 不轮转（不可变） |
+| `requests.<日>.jsonl` | 令牌（设备） | 「这台设备用了多少」 | 按天 |
+| `pluginlogs/<id>/*` | 插件 | 「这个插件整体干了什么」 | 按天 + 保留期 |
+
+```bash
+hubrelay toip logs list                       # 列出所有有日志的插件
+hubrelay toip logs show dsh-relayhub-bridge    # 接入事件 + 汇总 + 最近调用
+hubrelay toip logs prune --days 30            # 清理过期流水（接入事件保留）
+hubrelay toip revoke dsh-laptop               # 吊销通行证并收回其会话令牌
+```
+
+流水只记元数据：模型、协议、状态、token 数、延迟、IP。
+**prompt 与 completion 文本永不落盘**（由写入函数的签名与键白名单双重保证，
+两处都有测试钉住）。
 
 ## Highlights (English)
 
@@ -114,7 +296,7 @@ python -m relayhub.gateway serve --pool pool.json --api-key rh_master
 python -m relayhub.gateway admin
 ```
 
-More subcommands (`token` / `clients` / `pair` / `audit` / `check` / `scan` /
+More subcommands (`token` / `clients` / `pair` / `toip` / `audit` / `check` / `scan` /
 `requests` / `usage`) — see each one's `--help`.
 
 ## 快速开始 Quick Start（中文）
@@ -138,7 +320,7 @@ python -m relayhub.gateway serve --pool pool.json --api-key rh_master
 python -m relayhub.gateway admin
 ```
 
-更多子命令（`token` / `clients` / `pair` / `audit` / `check` / `scan` / `requests` /
+更多子命令（`token` / `clients` / `pair` / `toip` / `audit` / `check` / `scan` / `requests` /
 `usage`）见各自主命令的 `--help`。
 
 ## Provider Presets (English)
@@ -357,6 +539,13 @@ Or from Python: `hubrelay.doctor(port=8799)` → list of `{name, ok, detail, fix
   carry credentials.
 - The admin console binds to loopback by default; binding elsewhere requires an
   explicit `--token`.
+- **TOIP**: the station secret (`toip.json`) grants the ability to mint valid
+  codes — it stays on the gateway, is never sent to a browser, and is not in the
+  admin API. Tickets are stored as SHA-256 only, and the enrollment secret is
+  printed exactly once at `toip ticket`. Over plain HTTP a code or token is
+  visible to anyone on the same segment (same residual risk as pairing codes);
+  put TLS in front for untrusted networks. Rotate the secret with
+  `toip station --force` — live session tokens survive it.
 - Suspected key leak? Revoke immediately (`token rm` / rotate upstream keys).
 
 ## 安全须知 Security Notes（中文）
@@ -366,6 +555,11 @@ Or from Python: `hubrelay.doctor(port=8799)` → list of `{name, ok, detail, fix
 - 绑定非回环地址（公网/局域网）前，网关强制要求已配置凭证（master Key 或下游令牌），
   且所有流量都必须携带凭证。
 - 管理控制台默认只监听回环地址；绑非回环地址必须显式提供 `--token`。
+- **TOIP**：站点口令种子（`toip.json`）等于「能算出所有有效口令」的能力，它只留在
+  网关磁盘上，不下发浏览器、不进管理 API。通行证只存 SHA-256，登记口令只在
+  `toip ticket` 打印一次。走明文 HTTP 时，同网段的人能看到口令与令牌（与配对码
+  相同的残余风险）；不可信网络请在前面加 TLS。轮换种子用
+  `toip station --force`——已发出的会话令牌不受影响。
 - 遇到疑似密钥泄露请立即吊销（`token rm` / 更换上游 Key）。
 
 ## Disclaimer 免责声明

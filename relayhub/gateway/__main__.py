@@ -36,8 +36,10 @@ from . import discovery as discovery_module
 from .doctor_api import cmd_doctor as _cmd_doctor
 from . import localscan as localscan_module
 from . import pairing as pairing_module
+from . import pluginlogs as pluginlogs_module
 from . import policy as policy_module
 from . import reqlog as reqlog_module
+from . import toip as toip_module
 from .conformance import main as conformance_main, Probe
 from .pool import (
     PROTOCOL_ANTHROPIC,
@@ -293,6 +295,15 @@ def _cmd_serve(argv: list[str]) -> int:
         token_store = TokenStore(token_path)
 
     # 配对服务：端点常在，但窗口关闭时 /v1/pair 直接拒绝（零常态暴露）。
+    # TOIP 接入服务：站点身份文件不存在时它自己报「未启用」，端点全 404。
+    # 构造它不需要任何开关——「启用 TOIP」这件事由 `hubrelay toip station`
+    # 创建一个文件来表达，而不是由 serve 的某个 flag 表达。少一个 flag
+    # 少一处「管理员以为开了其实没开」的可能。
+    toip_service = toip_module.ToipService(
+        toip_module.TicketStore(paths.toip_tickets_path()),
+        token_store,
+        paths.toip_station_path(),
+    )
     pairing_service = pairing_module.PairingService(
         tokens=token_store, path=paths.pairing_path()
     )
@@ -1049,6 +1060,284 @@ def _cmd_pair(argv: list[str]) -> int:
     return int(args.func(args))
 
 
+# ---------------------------------------------------------------- toip
+
+
+def _cmd_toip_station(args: argparse.Namespace) -> int:
+    """建站点身份（幂等：已存在就只打印现状，除非 --force 轮换种子）。"""
+    path = paths.toip_station_path()
+    station = toip_module.load_station(path)
+    if station is not None and not args.force:
+        print(f"TOIP 站点已存在：{station.name}（station_id={station.station_id}）")
+        print("  轮换口令种子（旧动态口令立刻作废，已发出的会话令牌不受影响）：")
+        print("    relayhub.gateway toip station --force")
+        _print_station_hint(station)
+        return 0
+    if station is None:
+        station = toip_module.StationIdentity.create(name=args.name, base_url=args.base_url or "")
+        toip_module.save_station(path, station)
+        print(f"TOIP 站点已创建：{station.name}")
+    else:
+        station.name = args.name or station.name
+        if args.base_url is not None:
+            station.base_url = args.base_url
+        toip_module.rotate_secret(path, station)
+        print("口令种子已轮换（旧动态口令立刻作废）。")
+    print(f"  站点 id：{station.station_id}")
+    print(f"  身份文件：{path}")
+    _print_station_hint(station)
+    print("  下一步：为要接入的插件签一枚通行证")
+    print("    relayhub.gateway toip ticket --name dsh-laptop --plugins dsh-relayhub-bridge")
+    return 0
+
+
+def _print_station_hint(station: "toip_module.StationIdentity") -> None:
+    """打印当前动态口令与验证器 URI（管理员手抄或扫码都行）。"""
+    code = toip_module.totp_now(station.secret_bytes)
+    left = int(toip_module.totp_seconds_left())
+    print(f"  当前动态口令：{code}（{left} 秒后滚动；口令种子只在身份文件里，不再打印）")
+    print(f"  验证器 App：{toip_module.otpauth_uri(station.secret, label=station.name)}")
+
+
+def _cmd_toip_ticket(args: argparse.Namespace) -> int:
+    """签一枚通行证：产出登记口令（一次性）并可立刻读出现行动态口令。"""
+    station = toip_module.load_station(paths.toip_station_path())
+    if station is None:
+        print("尚未创建 TOIP 站点。先执行：relayhub.gateway toip station", file=sys.stderr)
+        return 1
+    plugins = [p.strip() for p in (args.plugins or "").split(",") if p.strip()]
+    try:
+        record, plain = toip_module.make_ticket(
+            name=args.name, plugins=plugins, ttl=args.ttl, note=args.note or ""
+        )
+        toip_module.TicketStore(paths.toip_tickets_path()).add(record)
+    except toip_module.ToipError as exc:
+        print(f"签发失败：{exc}", file=sys.stderr)
+        return 1
+    print(f"通行证已签发：{record.name}")
+    print(f"  登记口令（**只显示这一次**，插件首接用）：{plain}")
+    print(f"  允许的插件：{', '.join(record.plugins) if record.plugins else '（不限制，任意插件都能用它接入）'}")
+    if record.expires_at:
+        stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(record.expires_at))
+        print(f"  有效期至：{stamp}")
+    code = toip_module.totp_now(station.secret_bytes)
+    print(f"  现行动态口令（重接用，30 秒滚动）：{code}")
+    print("  插件侧：填中转站地址 + 上面任一凭证即可接入")
+    return 0
+
+
+def _cmd_toip_list(args: argparse.Namespace) -> int:
+    station = toip_module.load_station(paths.toip_station_path())
+    tickets = toip_module.TicketStore(paths.toip_tickets_path()).list()
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "station": (
+                        None
+                        if station is None
+                        else {
+                            "station_id": station.station_id,
+                            "name": station.name,
+                            "base_url": station.base_url,
+                        }
+                    ),
+                    "tickets": [
+                        {
+                            "ticket_id": t.ticket_id,
+                            "name": t.name,
+                            "hint": t.ticket_hint,
+                            "plugins": list(t.plugins),
+                            "enabled": t.enabled,
+                            "used_count": t.used_count,
+                            "last_used": t.last_used,
+                            "last_ip": t.last_ip,
+                            "expires_at": t.expires_at,
+                            "token_id": t.token_id,
+                        }
+                        for t in tickets
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if station is None:
+        print("（尚未启用 TOIP；`toip station` 创建站点身份）")
+    else:
+        print(f"站点：{station.name}  id={station.station_id}  base_url={station.base_url or '（按请求 Host 回填）'}")
+    if not tickets:
+        print("（还没有通行证）")
+        return 0
+    print(f"通行证（{len(tickets)} 枚）：")
+    for t in tickets:
+        state = "启用" if t.enabled else "停用"
+        when = (
+            time.strftime("%m-%d %H:%M", time.localtime(t.last_used)) if t.last_used else "从未"
+        )
+        print(
+            f"  {t.name:<20} {t.ticket_hint}  {state}  用{t.used_count}次  最后{when}  "
+            f"插件={','.join(t.plugins) or '*'}"
+        )
+    return 0
+
+
+def _cmd_toip_revoke(args: argparse.Namespace) -> int:
+    """吊销通行证：可选一并收回它换出去的会话令牌（默认收回）。"""
+    store = toip_module.TicketStore(paths.toip_tickets_path())
+    target = None
+    for t in store.list():
+        if t.name == args.name or t.ticket_id == args.name:
+            target = t
+            break
+    if target is None:
+        print(f"找不到通行证：{args.name}", file=sys.stderr)
+        return 1
+    token_id = target.token_id
+    store.remove(target.ticket_id)
+    print(f"通行证已吊销：{target.name}")
+    if token_id and not args.keep_token:
+        token_store = TokenStore(paths.tokens_path())
+        token_store.mutate(lambda pool: pool.remove(token_id))
+        print(f"  同时收回会话令牌 {token_id[:8]}…（插件下次请求会 401）")
+    elif token_id:
+        print("  保留了会话令牌（--keep-token）：插件仍能用到令牌过期")
+    return 0
+
+
+def _cmd_toip_logs(args: argparse.Namespace) -> int:
+    """看插件日志：list / show / prune / forget。"""
+    home = paths.relayhub_home()
+    if args.action == "list":
+        rows = pluginlogs_module.list_plugins(home)
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        if not rows:
+            print("（还没有任何插件日志）")
+            return 0
+        for row in rows:
+            seen = (
+                time.strftime("%m-%d %H:%M", time.localtime(row["first_seen"]))
+                if row["first_seen"]
+                else "-"
+            )
+            last = (
+                time.strftime("%m-%d %H:%M", time.localtime(row["last_activity"]))
+                if row["last_activity"]
+                else "-"
+            )
+            print(
+                f"  {row['plugin_id']:<28} {row['files']:>3} 个文件  "
+                f"{row['bytes']:>8} B  首次 {seen}  最后 {last}"
+            )
+        return 0
+    if args.action == "show":
+        rows = pluginlogs_module.tail(home, args.plugin, limit=args.limit)
+        events = pluginlogs_module.events(home, args.plugin, limit=args.limit)
+        if args.json:
+            print(json.dumps({"events": events, "entries": rows}, ensure_ascii=False, indent=2))
+            return 0
+        if not rows and not events:
+            print(f"（插件 {args.plugin} 没有任何日志）")
+            return 0
+        if events:
+            print(f"接入事件（{len(events)} 条）：")
+            for e in events:
+                stamp = time.strftime("%m-%d %H:%M:%S", time.localtime(float(e.get("ts") or 0)))
+                detail = {k: v for k, v in e.items() if k not in ("ts", "schema")}
+                print(f"  {stamp}  {detail}")
+        summary = pluginlogs_module.summarize(rows)
+        window = summary["window"]
+        print(
+            f"调用流水（{window['requests']} 条）：ok={window['ok']} failed={window['failed']} "
+            f"tokens_in={window['tokens_in']} tokens_out={window['tokens_out']} "
+            f"avg={window['avg_latency_ms']}ms"
+        )
+        for entry in rows:
+            stamp = time.strftime("%m-%d %H:%M:%S", time.localtime(float(entry.get("ts") or 0)))
+            flag = "ok " if entry.get("ok") else "ERR"
+            print(
+                f"  {stamp}  {flag} {str(entry.get('model') or '-'):<24} "
+                f"{str(entry.get('dialect') or '-'):<10} "
+                f"in={entry.get('tokens_in', 0)} out={entry.get('tokens_out', 0)} "
+                f"{entry.get('latency_ms', 0)}ms  {entry.get('reason', '')}"
+            )
+        return 0
+    if args.action == "prune":
+        removed = pluginlogs_module.prune(home, retention_days=args.days)
+        print(f"已清理 {len(removed)} 个过期流水文件（保留期 {args.days} 天；接入事件不清理）。")
+        for name in removed:
+            print(f"  - {name}")
+        return 0
+    if args.action == "forget":
+        if not args.yes:
+            print(
+                f"这会**永久删除**插件 {args.plugin} 的全部日志（含接入事件）。"
+                "确认请加 --yes。",
+                file=sys.stderr,
+            )
+            return 2
+        if pluginlogs_module.forget(home, args.plugin):
+            print(f"已删除插件 {args.plugin} 的全部日志。")
+            return 0
+        print(f"插件 {args.plugin} 没有日志目录。", file=sys.stderr)
+        return 1
+    return 2
+
+
+def _cmd_toip(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="relayhub.gateway toip",
+        description="TOIP 动态口令接入：插件用网址+口令自助接入，并按插件分账日志",
+    )
+    sub = parser.add_subparsers(dest="action", required=True)
+
+    p_station = sub.add_parser("station", help="创建/查看本站 TOIP 身份（--force 轮换口令种子）")
+    p_station.add_argument("--name", default="relay-hub", help="站点显示名")
+    p_station.add_argument("--base-url", dest="base_url", default=None, help="显式对外地址（跨网段/NAT 后无法从来源推断时用）")
+    p_station.add_argument("--force", action="store_true", help="已存在时轮换口令种子")
+    p_station.set_defaults(func=_cmd_toip_station)
+
+    p_ticket = sub.add_parser("ticket", help="为一台设备/一个插件签一枚通行证（登记口令）")
+    p_ticket.add_argument("--name", required=True, help="通行证名（设备名，吊销时按它找）")
+    p_ticket.add_argument("--plugins", default="", help="允许的插件 id，逗号分隔；留空=不限制")
+    p_ticket.add_argument("--ttl", type=float, default=0.0, help="登记口令有效期秒数（0=不过期）")
+    p_ticket.add_argument("--note", default="", help="备注")
+    p_ticket.set_defaults(func=_cmd_toip_ticket)
+
+    p_list = sub.add_parser("list", help="列出站点与全部通行证")
+    p_list.add_argument("--json", action="store_true")
+    p_list.set_defaults(func=_cmd_toip_list)
+
+    p_revoke = sub.add_parser("revoke", help="吊销通行证（默认一并收回会话令牌）")
+    p_revoke.add_argument("name", help="通行证名或 ticket_id")
+    p_revoke.add_argument("--keep-token", dest="keep_token", action="store_true", help="保留已发出的会话令牌")
+    p_revoke.set_defaults(func=_cmd_toip_revoke)
+
+    p_logs = sub.add_parser("logs", help="插件日志：list / show / prune / forget")
+    logs_sub = p_logs.add_subparsers(dest="action", required=True)
+    l_list = logs_sub.add_parser("list", help="列出所有有日志的插件")
+    l_list.add_argument("--json", action="store_true")
+    l_list.set_defaults(func=_cmd_toip_logs)
+    l_show = logs_sub.add_parser("show", help="看某个插件的接入事件与调用流水")
+    l_show.add_argument("plugin", help="插件 id")
+    l_show.add_argument("--limit", type=int, default=50)
+    l_show.add_argument("--json", action="store_true")
+    l_show.set_defaults(func=_cmd_toip_logs)
+    l_prune = logs_sub.add_parser("prune", help="按保留期清理过期流水（接入事件不清理）")
+    l_prune.add_argument("--days", type=int, default=pluginlogs_module.DEFAULT_RETENTION_DAYS)
+    l_prune.set_defaults(func=_cmd_toip_logs)
+    l_forget = logs_sub.add_parser("forget", help="永久删除某个插件的全部日志")
+    l_forget.add_argument("plugin")
+    l_forget.add_argument("--yes", action="store_true", help="确认删除（不加则只提示）")
+    l_forget.set_defaults(func=_cmd_toip_logs)
+
+    args = parser.parse_args(argv)
+    return int(args.func(args))
+
+
 # ---------------------------------------------------------------- audit
 
 
@@ -1266,6 +1555,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_clients(argv[1:])
     if argv and argv[0] == "pair":
         return _cmd_pair(argv[1:])
+    if argv and argv[0] == "toip":
+        return _cmd_toip(argv[1:])
     if argv and argv[0] == "audit":
         return _cmd_audit_main(argv[1:])
     if argv and argv[0] == "doctor":
@@ -1281,13 +1572,13 @@ def main(argv: list[str] | None = None) -> int:
         print(__doc__)
         print(
             "可用子命令：serve / admin / scan / pool / requests / usage "
-            "/ token / clients / pair / audit / check / doctor"
+            "/ token / clients / pair / toip / audit / check / doctor"
         )
         return 0
     print(__doc__)
     print(
         "用法：python -m relayhub.gateway serve|admin|scan|pool|requests|usage"
-        "|token|clients|pair|audit|check|doctor [选项]",
+        "|token|clients|pair|toip|audit|check|doctor [选项]",
         file=sys.stderr,
     )
     return 2

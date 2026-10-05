@@ -390,6 +390,17 @@ class TokenStore:
     def find(self, secret: str) -> DownstreamToken | None:
         return self._current().find(secret)
 
+    def by_id(self, token_id: str) -> DownstreamToken | None:
+        """按 token_id 取令牌。
+
+        与 `find(明文)` 的区别是它不需要明文——TOIP 轮换会话令牌时，通行证
+        里只记着上一次发出的 token_id，靠它找回旧令牌好作废（明文落盘只存
+        哈希，拿不回原文，轮换是唯一诚实的「再来一次」）。
+        """
+        if not token_id:
+            return None
+        return self._current().get(token_id)
+
     def add(self, token: DownstreamToken) -> DownstreamToken:
         """发放一枚令牌（配对流程用）。
 
