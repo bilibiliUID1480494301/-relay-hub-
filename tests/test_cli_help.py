@@ -35,4 +35,4 @@ def test_serve_help_word_alias():
 def test_top_level_version():
     r = _run("--version")
     assert r.returncode == 0
-    assert r.stdout.strip().endswith("0.2.11") or "hubrelay" in r.stdout
+    assert r.stdout.strip().endswith("0.2.12") or "hubrelay" in r.stdout

@@ -18,12 +18,15 @@ PY = sys.executable
 TMP = Path(r"C:/Users/ws/AppData/Local/Temp/hubrelay_mtv")
 
 CHILD = (
-    "import sys, hubrelay\n"
+    "import sys, time, hubrelay\n"
     "home = sys.argv[1]\n"
     "st = hubrelay.Station(port=int(sys.argv[2]), home=home)\n"
     "t = st.create_token('mtv', scope='test')\n"
+    "url = st.serve(background=True)\n"
     "print('TOKEN', t.plaintext, flush=True)\n"
-    "print('URL', st.serve(background=False), flush=True)\n"
+    "print('URL', url, flush=True)\n"
+    "while True:\n"
+    "    time.sleep(3600)\n"
 )
 
 
@@ -87,20 +90,30 @@ def test_version(ver, port):
     res["install"] = True
 
     r = subprocess.run([py, "-c", "import hubrelay;print(hubrelay.__version__)"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, cwd=str(TMP))
     res["version_ok"] = r.stdout.strip() == ver
     res["serve_help"] = subprocess.run([exe, "serve", "--help"],
-                                       capture_output=True, text=True).returncode == 0
+                                       capture_output=True, text=True,
+                                       cwd=str(TMP)).returncode == 0
     res["serve_help_word"] = "usage:" in subprocess.run(
-        [exe, "serve", "help"], capture_output=True, text=True).stdout.lower()
+        [exe, "serve", "help"], capture_output=True, text=True,
+        cwd=str(TMP)).stdout.lower()
     res["version_flag"] = ver in subprocess.run(
-        [exe, "--version"], capture_output=True, text=True).stdout
+        [exe, "--version"], capture_output=True, text=True, cwd=str(TMP)).stdout
 
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    import shutil
+    shutil.rmtree(TMP / f"home-{ver}", ignore_errors=True)  # 上次残留的同名令牌会让 create_token 报错
     env = dict(os.environ)
     env["RELAYHUB_HOME"] = str(TMP / f"home-{ver}")
     child = subprocess.Popen([py, "-c", CHILD, str(TMP / f"home-{ver}"), str(port)],
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, env=env)
+                             text=True, env=env, cwd=str(TMP))
     try:
         token = url = None
         for _ in range(60):
@@ -116,7 +129,10 @@ def test_version(ver, port):
             res["serve"] = False
             return res
         res["serve"] = True
-        res.update(api_calls(url, token))
+        try:
+            res.update(api_calls(url, token))
+        except Exception as exc:
+            res["api_error"] = f"{type(exc).__name__}: {exc}"[:120]
     finally:
         child.kill()
     return res
@@ -143,6 +159,8 @@ if __name__ == "__main__":
                   "version_flag", "serve"):
             if res.get(k) is not True:
                 problems.append(f"{k}={res.get(k)}")
+        if "api_error" in res:
+            problems.append("api_error=" + res["api_error"])
         for k, want in expected.get(ver, {}).items():
             if res.get(k) != want:
                 problems.append(f"{k}={res.get(k)} (want {want})")

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import re
 import ssl
 import threading
 import time
@@ -99,7 +100,9 @@ def _open(key: UpstreamKey, path: str, timeout: float) -> tuple[HTTPConnection, 
     # 请求目标用 origin-form（仅路径）：http.client 对绝对 URL 会原样发出
     # 「POST http://host/... HTTP/1.1」，严格的 origin server 会回 404 空响应体。
     base_path = parts.path.rstrip("/")
-    if not base_path.lower().endswith("/v1"):
+    if not re.search(r"/v\d+$", base_path, re.IGNORECASE):
+        # base_url 没带版本段才补 /v1：显式写了 /v1、/v4（智谱）等就尊重原样，
+        # 否则智谱的 /api/paas/v4 会被改写成 /api/paas/v4/v1 直接 404。
         base_path = f"{base_path}/v1"
     target = f"{base_path}{path}"
     if parts.query:

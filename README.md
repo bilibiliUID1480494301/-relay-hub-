@@ -141,6 +141,78 @@ python -m relayhub.gateway admin
 更多子命令（`token` / `clients` / `pair` / `audit` / `check` / `scan` / `requests` /
 `usage`）见各自主命令的 `--help`。
 
+## Provider Presets (English)
+
+```python
+import hubrelay
+st.add_upstream(provider="deepseek", api_key="sk-…")   # one line per vendor
+st.add_upstream(provider="kimi", api_key="sk-…")       # aliases: kimi/qwen/glm …
+print(hubrelay.list_providers())                        # 16 built-in presets
+```
+
+Built-ins include openai / deepseek / moonshot(kimi) / zhipu(glm) /
+dashscope(qwen) / openrouter / siliconflow / groq / mistral / together /
+fireworks / xai and local servers (ollama / lmstudio / vllm / llamacpp).
+`add_upstream` also exposes `model_mapping`, `extra_headers` and `auth_mode`;
+explicit version paths in `base_url` (e.g. zhipu's `/api/paas/v4`) are respected.
+`Station` additionally offers `stats()` (channel health / circuit breaker),
+`request_logs(limit)` and `usage_summary()`.
+Note: `/v1/responses` uses protocol normalization (same approach as one-api /
+new-api); text & streaming work end to end, function-call round-trips are on
+the roadmap.
+
+## 渠道预设（中文）
+
+```python
+st.add_upstream(provider="deepseek", api_key="sk-…")   # 一行接一家
+print(hubrelay.list_providers())                        # 内置 16 个预设
+```
+
+内置 openai / deepseek / moonshot(kimi) / zhipu(glm) / dashscope(qwen) /
+openrouter / siliconflow / groq / mistral / together / fireworks / xai 以及
+本机推理（ollama / lmstudio / vllm / llamacpp）。`add_upstream` 同时暴露
+`model_mapping`（对外名→上游名）、`extra_headers`、`auth_mode`；base_url 里
+显式写了版本路径（如智谱 `/api/paas/v4`）会被原样尊重。`Station` 另有
+`stats()`（渠道健康/熔断）、`request_logs(limit)`、`usage_summary()`。
+说明：`/v1/responses` 采用与 one-api / new-api 相同的协议归一化思路实现，
+文本与流式已完整支持，function call 往返在路线图上。
+
+## Provider Presets (English)
+
+```python
+import hubrelay
+st.add_upstream(provider="deepseek", api_key="sk-…")   # one line per vendor
+st.add_upstream(provider="kimi", api_key="sk-…")       # aliases: kimi/qwen/glm …
+print(hubrelay.list_providers())                        # 16 built-in presets
+```
+
+Built-ins include openai / deepseek / moonshot(kimi) / zhipu(glm) /
+dashscope(qwen) / openrouter / siliconflow / groq / mistral / together /
+fireworks / xai and local servers (ollama / lmstudio / vllm / llamacpp).
+`add_upstream` also exposes `model_mapping`, `extra_headers` and `auth_mode`;
+explicit version paths in `base_url` (e.g. zhipu's `/api/paas/v4`) are respected.
+`Station` additionally offers `stats()` (channel health / circuit breaker),
+`request_logs(limit)` and `usage_summary()`.
+Note: `/v1/responses` uses protocol normalization (same approach as one-api /
+new-api); text & streaming work end to end, function-call round-trips are on
+the roadmap.
+
+## 渠道预设（中文）
+
+```python
+st.add_upstream(provider="deepseek", api_key="sk-…")   # 一行接一家
+print(hubrelay.list_providers())                        # 内置 16 个预设
+```
+
+内置 openai / deepseek / moonshot(kimi) / zhipu(glm) / dashscope(qwen) /
+openrouter / siliconflow / groq / mistral / together / fireworks / xai 以及
+本机推理（ollama / lmstudio / vllm / llamacpp）。`add_upstream` 同时暴露
+`model_mapping`（对外名→上游名）、`extra_headers`、`auth_mode`；base_url 里
+显式写了版本路径（如智谱 `/api/paas/v4`）会被原样尊重。`Station` 另有
+`stats()`（渠道健康/熔断）、`request_logs(limit)`、`usage_summary()`。
+说明：`/v1/responses` 采用与 one-api / new-api 相同的协议归一化思路实现，
+文本与流式已完整支持，function call 往返在路线图上。
+
 ## Python API (English)
 
 ```python

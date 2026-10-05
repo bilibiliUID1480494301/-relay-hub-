@@ -33,13 +33,16 @@ from typing import Any, Sequence
 
 from . import paths
 from .doctor import run_checks as doctor
+from .providers import list_providers
 from .gateway.localscan import LocalServer, import_to_pool, scan as _scan
 from .gateway.pool import (
+    AUTH_MODE_AUTO,
     PROTOCOL_ANTHROPIC,
     PROTOCOL_OPENAI_CHAT,
     KeyPool,
     UpstreamKey,
 )
+from .gateway.reqlog import summarize as _reqlog_summarize, tail as _reqlog_tail
 from .gateway.router import KeyPoolRouter
 from .gateway.service import RelayServer
 from .gateway.tokens import (
@@ -51,7 +54,7 @@ from .gateway.tokens import (
     generate_token,
 )
 
-__version__ = "0.2.11"
+__version__ = "0.2.12"
 
 __all__ = [
     "Station",
@@ -60,6 +63,7 @@ __all__ = [
     "scan_local",
     "quickstart",
     "doctor",
+    "list_providers",
     "__version__",
 ]
 
@@ -187,7 +191,7 @@ class Station:
 
     def add_upstream(
         self,
-        base_url: str,
+        base_url: str = "",
         api_key: str = "",
         models: Sequence[str] = (),
         protocol: str | None = None,
@@ -195,10 +199,20 @@ class Station:
         priority: int = 0,
         weight: int = 1,
         note: str = "",
+        provider: str | None = None,
+        model_mapping: dict[str, str] | None = None,
+        extra_headers: dict[str, str] | None = None,
+        auth_mode: str | None = None,
     ) -> UpstreamAdded:
         """Add an upstream channel (remote API key or self-hosted server).
 
         Args:
+            provider: preset name from :data:`hubrelay.list_providers()` —
+                e.g. ``"deepseek"``, ``"moonshot"``/``"kimi"``, ``"zhipu"``/``"glm"``,
+                ``"dashscope"``/``"qwen"``, ``"openrouter"``, ``"siliconflow"``,
+                ``"ollama"``, ``"vllm"`` … Fills ``base_url`` (and label when
+                omitted), so you write ``add_upstream(provider="deepseek",
+                api_key="sk-…")``. Mutually exclusive with ``base_url``.
             base_url: upstream address, e.g. ``https://api.example.com/v1`` or
                 ``http://127.0.0.1:11434`` (Ollama).
             api_key: upstream secret (``sk-…``). Leave empty for unauthenticated
@@ -209,9 +223,29 @@ class Station:
             label: channel alias (auto-generated when omitted).
             priority: higher = preferred; used for primary/backup semantics.
             weight: load-balancing weight within the same priority.
+            model_mapping: public name → upstream real name, e.g.
+                ``{"gpt-4o": "deepseek-chat"}`` (same semantics as one-api/new-api
+                channel model mapping).
+            extra_headers: per-channel extra request headers (e.g. anthropic-beta).
+            auth_mode: ``"bearer"`` forces Bearer auth even on Anthropic-protocol
+                channels; default auto.
 
-        添加一个上游渠道。protocol 不传自动猜；priority 大者优先（主备语义）。
+        添加一个上游渠道。provider 一行接入内置预设；protocol 不传自动猜；
+        priority 大者优先（主备语义）；model_mapping 做对外名→上游名映射。
         """
+        if provider:
+            if base_url:
+                raise ValueError("provider 与 base_url 二选一 / use provider OR base_url")
+            from .providers import resolve_provider  # local: avoid import cost
+
+            preset_url, canonical = resolve_provider(provider)
+            base_url = preset_url
+            if not label:
+                label = canonical
+            if not models:
+                models = ()
+        elif not base_url:
+            raise ValueError("需要 base_url 或 provider / need base_url or provider")
         pool = self._pool()
         lab = (label or "").strip() or f"up-{len(pool.keys) + 1}"
         key = UpstreamKey(
@@ -221,6 +255,9 @@ class Station:
             api_key=api_key,
             protocol=self._guess_protocol(base_url, protocol),
             models=tuple(models),
+            model_mapping=dict(model_mapping or {}),
+            extra_headers=dict(extra_headers or {}),
+            auth_mode=auth_mode or AUTH_MODE_AUTO,
             priority=int(priority),
             weight=int(weight),
             note=note,
@@ -415,6 +452,50 @@ class Station:
         }
         return {"upstream": up, "downstream": down}
 
+    def stats(self) -> dict[str, Any]:
+        """Channel health & circuit-breaker snapshot / 渠道健康与熔断快照。
+
+        Per-channel availability, cooldown tier, consecutive failures —
+        everything needed to answer "为什么这个模型现在不走了".
+        """
+        return self._pool_stats()
+
+    def _pool_stats(self) -> dict[str, Any]:
+        pool = self._pool()
+        now = __import__("time").time()
+        return {
+            "key_count": len(pool.keys),
+            "usable_count": len([k for k in pool.keys if k.is_available(now)]),
+            "keys": [
+                {
+                    "label": k.label,
+                    "enabled": k.enabled,
+                    "available": k.is_available(now),
+                    "cooldown_tier": k.cooldown_tier,
+                    "consecutive_failures": k.consecutive_failures,
+                    "models": list(k.models),
+                }
+                for k in pool.keys
+            ],
+        }
+
+    def request_logs(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Last N request-log entries (oldest → newest) / 最近 N 条请求明细。
+
+        Reads the daily ``requests.jsonl`` files under the station home —
+        the same data the admin console shows.
+        """
+        return _reqlog_tail(self.home / "requests.jsonl", limit=limit)
+
+    def usage_summary(self) -> dict[str, Any]:
+        """Aggregated request stats (by day / model / channel / token) / 用量汇总。
+
+        Aggregates the same log data into per-bucket counters — handy for
+        quick "今天用了多少" questions without opening the console.
+        """
+        entries = _reqlog_tail(self.home / "requests.jsonl", limit=100000)
+        return _reqlog_summarize(entries)
+
     # -- serve / stop: 起站与停站 --------------------------------------------
 
     def serve(
@@ -452,6 +533,7 @@ class Station:
             tokens=token_store,
             pairing=pairing,
             verbose=verbose,
+            request_log=self.home / "requests.jsonl",
         )
         responder = None
         if discover:
