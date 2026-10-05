@@ -154,6 +154,15 @@ hubrelay toip logs prune --days 30            # drop old call logs (events are k
 hubrelay toip revoke dsh-laptop               # revoke ticket + reclaim its token
 ```
 
+**DeepSeek Harness client:** the companion plugin
+[`dsh-relayhub-bridge`](https://github.com/bilibiliUID1480494301/dsh-relayhub-bridge)
+does the join for you and rides `X-DSH-Plugin-Id` on every request, which is what
+makes the per-plugin accounting below work:
+
+```bash
+dsh plugin --profile <profile> add dsh-relayhub-bridge
+```
+
 Log lines are metadata only — model, dialect, status, token counts, latency, IP.
 **Prompt and completion text are never written** (enforced by the writer's
 signature and a key whitelist, both covered by tests).
