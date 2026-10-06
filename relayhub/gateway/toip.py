@@ -54,6 +54,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from . import secretbox
 from .atomicio import write_json_atomic
 from .tokens import DownstreamToken, TokenStore, generate_token, token_hint_of
 
@@ -220,11 +221,11 @@ class StationIdentity:
 
 
 def load_station(path: Path) -> StationIdentity | None:
-    """读站点身份文件。不存在或损坏返回 None（TOIP 视为未启用）。"""
-    try:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return None
+    """读站点身份文件。不存在/损坏/解不开都返回 None（TOIP 视为未启用）。
+
+    secretbox 兼容历史明文文档；DPAPI 解密失败（文件被拷到别的机器）按
+    「站点不存在」处理，绝不把密文当明文猜。"""
+    raw = secretbox.unseal(Path(path))
     if not isinstance(raw, dict) or not raw.get("secret"):
         return None
     known = {f for f in StationIdentity.__dataclass_fields__}
@@ -232,10 +233,13 @@ def load_station(path: Path) -> StationIdentity | None:
 
 
 def save_station(path: Path, station: StationIdentity) -> None:
+    """站点身份加密落盘（secretbox：Windows DPAPI / 其余平台明文 0600 降级）。
+
+    口令种子等于「该站点全部接入能力」，只允许以本机账户可解的密文躺在
+    磁盘上——toip.json 被拷到任何别的机器都算不出本站动态口令。
+    """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(path, asdict(station))
-    _harden(path)
+    secretbox.seal(asdict(station), path=path)
 
 
 def _harden(path: Path) -> None:

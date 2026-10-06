@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import re
 import secrets
 import sys
 import threading
@@ -31,6 +32,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .. import paths
+from . import atomicio
 from . import audit as audit_module
 from . import pluginlogs as pluginlogs_module
 from . import reqlog as reqlog_module
@@ -38,6 +40,7 @@ from . import toip as toip_module
 from . import upstream
 from .policy import KIND_DEVICE, KIND_IP, PolicyError, PolicyStore
 from .users import RedeemStore, UserError, UserPool, hash_password
+
 from .pool import (
     DEFAULT_TIER_DURATIONS,
     is_self_reference,
@@ -51,6 +54,22 @@ from .pool import (
 )
 from .tokens import DownstreamToken, TokenError, TokenPool, generate_token
 from .upstream import UpstreamError
+# 外观配置的入参白名单：色值只认十六进制 CSS 颜色；图片只认无引号/空白的
+# http(s) URL。两者都会被原样拼进公网面板的 <style>，这里不收口就是 CSS 注入。
+WEBUI_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{3,8}$")
+WEBUI_IMAGE_FORBIDDEN = set(' \t\r\n"\'<>\\()')
+
+
+
+def _webui_image_ok(url: str) -> bool:
+    """背景图 URL 白名单：http(s) 开头，且不含空白/引号/尖括号/反斜杠/圆括号。
+
+    这个 URL 会被原样拼进公网面板的 <style> background-image:url('…')，
+    引号或尖括号混进来就是 CSS/HTML 注入；这里用直白的集合判断而不是
+    字符类正则——URL 里的引号转义在正则字面量里太容易写错。
+    """
+    return url.startswith(("http://", "https://")) and not any(c in WEBUI_IMAGE_FORBIDDEN for c in url)
+
 
 ADMIN_HEADER = "X-Admin-Token"
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
@@ -425,6 +444,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/audit": self._audit_state,
             "/api/plugins": self._plugins_state,
             "/api/toip": self._toip_state,
+            "/api/toip/otpauth": self._toip_otpauth,
+            "/api/webui": self._webui_state,
             "/api/policy": lambda: self.server.policy.state(),
         }
         if path in read_routes:
@@ -461,7 +482,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             ["api", "keys"], ["api", "tokens"],
             ["api", "users"], ["api", "codes"], ["api", "policy"],
         ) or parts in (
-            ["api", "settings"],
+            ["api", "settings"], ["api", "webui"],
         )
         if not known:
             self._error(404, f"未知路径 {self.path}")
@@ -481,6 +502,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._error(405, "设置只支持 PUT")
                 return
             self._update_settings()
+            return
+        if parts == ["api", "webui"]:
+            if method != "POST":
+                self._error(405, "外观只支持 POST 保存")
+                return
+            self._update_webui()
             return
         if parts[:2] == ["api", "tokens"]:
             self._handle_tokens(method, parts)
@@ -1216,6 +1243,77 @@ class AdminHandler(BaseHTTPRequestHandler):
             }
         return payload
 
+    def _toip_otpauth(self) -> dict[str, Any]:
+        """管理员**主动**索取 otpauth:// 登记二维码（验证器 App 扫码用）。
+
+        与 _toip_state 的「种子不下发浏览器」纪律并不冲突：那边是说不**顺手**
+        下发；这里是管理员明确点了「显示扫码登记」——没有这个动作，任何验证器
+        都无从扫码（种子只存在网关磁盘的 toip.json 里）。每次下发写一条审计
+        （toip.otpauth_revealed），种子外泄可追溯；URI 本身不进日志、不进历史。
+
+        二维码在服务端渲染成 PNG data-URI——但 `qrcode` 是**可选依赖**
+        （pip install "hubrelay[qr]"）：没装就只回 otpauth URI，管理台降级
+        显示明文链接，不逼所有部署装画图库。
+        """
+        station = toip_module.load_station(self.server.toip_station_path)  # type: ignore[attr-defined]
+        if station is None:
+            return {"enabled": False}
+        uri = toip_module.otpauth_uri(station.secret, label=station.name)
+        audit_module.record(
+            "toip.otpauth_revealed",
+            path=self.server.audit_path,  # type: ignore[attr-defined]
+            station_id=station.station_id,
+        )
+        payload: dict[str, Any] = {"enabled": True, "otpauth": uri, "label": station.name}
+        try:
+            import qrcode  # 可选依赖
+        except ImportError:
+            payload["qr"] = False
+        else:
+            import base64
+            import io
+
+            image = qrcode.make(uri, border=2)
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            payload["qr"] = True
+            payload["png"] = (
+                "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+            )
+        return payload
+
+    def _webui_state(self) -> dict[str, Any]:
+        """外观配置回读：文件不存在/损坏一律回空表（前端显示默认值）。"""
+        try:
+            raw = json.loads(paths.webui_theme_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"bg_color": "", "bg_image": ""}
+        return {
+            "bg_color": str(raw.get("bg_color") or ""),
+            "bg_image": str(raw.get("bg_image") or ""),
+        }
+
+    def _update_webui(self) -> None:
+        body = self._read_json()
+        if body is None:
+            return
+        color = str(body.get("bg_color") or "").strip()
+        image = str(body.get("bg_image") or "").strip()
+        if color and not WEBUI_COLOR_RE.match(color):
+            self._error(400, "背景色必须是 #RGB / #RRGGBB / #RRGGBBAA 十六进制")
+            return
+        if image and not _webui_image_ok(image):
+            self._error(400, "背景图必须是 http(s):// 图片地址（不含空格与引号）")
+            return
+        payload = {"bg_color": color, "bg_image": image, "updated_at": round(time.time(), 3)}
+        atomicio.write_json_atomic(paths.webui_theme_path(), payload)
+        audit_module.record(
+            "webui.theme_updated",
+            path=self.server.audit_path,  # type: ignore[attr-defined]
+            bg_color=bool(color), bg_image=bool(image),
+        )
+        self._send_json(200, {"bg_color": color, "bg_image": image})
+
 
 
 class AdminServer(ThreadingHTTPServer):
@@ -1434,6 +1532,7 @@ display:none;border:1px solid var(--line);background:var(--panel)}
   <button data-tab="usage">用量</button>
   <button data-tab="plugins">插件</button>
   <button data-tab="toip">动态口令</button>
+  <button data-tab="theme">外观</button>
   <button data-tab="audit">审计</button>
 </nav>
 
@@ -1673,8 +1772,9 @@ display:none;border:1px solid var(--line);background:var(--panel)}
 <div class="pane" id="pane-toip" style="display:none">
 <section class="panel">
   <h2>TOIP 动态口令接入</h2>
-  <div class="row"><button id="tp-load">刷新</button></div>
+  <div class="row"><button id="tp-load">刷新</button><button id="tp-qr-show" class="ghost">显示扫码登记</button></div>
   <div id="tp-state" style="margin-top:10px"></div>
+  <div id="tp-qr" style="margin-top:10px"></div>
 </section>
 <section class="panel">
   <h2>通行证</h2>
@@ -1687,6 +1787,23 @@ display:none;border:1px solid var(--line);background:var(--panel)}
     不落盘、不经浏览器。轮换站点口令种子（旧动态口令立刻作废、已发出的会话令牌不受影响）：
     <code>hubrelay toip station --force</code>。吊销通行证并可一并收回会话令牌：
     <code>hubrelay toip revoke &lt;名称&gt;</code>。</p>
+</section>
+</div>
+
+<div class="pane" id="pane-theme" style="display:none">
+<section class="panel">
+  <h2>公网面板外观</h2>
+  <p class="hint">自定义 <code>/panel</code> 用户面板的背景。留空 = 用默认米白底。
+  背景图只接受 http(s) 图片地址；色值只接受 #RGB / #RRGGBB / #RRGGBBAA。
+  两项都会做白名单校验——它们会被拼进面板 CSS，这里不收口就是注入。</p>
+  <div class="row">
+    <input id="th-color" placeholder="背景色，如 #1B2A4A（留空=默认）" style="flex:1">
+  </div>
+  <div class="row">
+    <input id="th-image" placeholder="背景图 URL，如 https://example.com/bg.jpg（留空=无）" style="flex:1">
+  </div>
+  <div class="row"><button id="th-save">保存外观</button><button id="th-load" class="ghost">读取当前</button></div>
+  <p class="hint" id="th-msg"></p>
 </section>
 </div>
 
@@ -1927,6 +2044,7 @@ function loadPane(name){
   if(name==='usage'){loadUsage();return;}
   if(name==='plugins'){loadPlugins();return;}
   if(name==='toip'){loadToip();return;}
+  if(name==='theme'){loadTheme();return;}
   if(name==='audit'){loadAudit();return;}
 }
 
@@ -2407,7 +2525,40 @@ function loadToip(){
       '<tr><td colspan="9" style="color:var(--muted)">（还没有通行证）</td></tr>';
   }).catch(function(e){toast('加载失败：'+e.message,false);});
 }
+function loadToipQr(){
+  var box=document.getElementById('tp-qr');
+  box.innerHTML='<p class="hint">生成中…</p>';
+  api('GET','/api/toip/otpauth').then(function(s){
+    if(!s.enabled){box.innerHTML='<p class="hint">尚未创建 TOIP 站点：先执行 <code>hubrelay toip station</code>。</p>';return;}
+    if(s.png){
+      box.innerHTML='<div class="card" style="display:inline-block;text-align:center">'+
+        '<img alt="otpauth 二维码" src="'+s.png+'" width="200" height="200">'+
+        '<p class="hint">用验证器 App 扫码添加；动态口令即「当前动态口令」卡片显示的 6 位数字。</p></div>';
+    }else{
+      box.innerHTML='<div class="card"><span>otpauth URI（服务端未装 qr 扩展：'+
+        '<code>pip install "hubrelay[qr]"</code> 后可出图）</span><b class="mono" style="word-break:break-all">'+esc(s.otpauth)+'</b></div>'+
+        '<p class="hint">把上面的 URI 贴进验证器 App 手动添加，效果与扫码一致。</p>';
+    }
+  }).catch(function(e){box.innerHTML='';toast('获取失败：'+e.message,false);});
+}
 document.getElementById('tp-load').onclick=loadToip;
+document.getElementById('tp-qr-show').onclick=loadToipQr;
+
+function loadTheme(){
+  api('GET','/api/webui').then(function(s){
+    document.getElementById('th-color').value=s.bg_color||'';
+    document.getElementById('th-image').value=s.bg_image||'';
+  }).catch(function(e){toast('读取失败：'+e.message,false);});
+}
+document.getElementById('th-load').onclick=loadTheme;
+document.getElementById('th-save').onclick=function(){
+  var body={bg_color:document.getElementById('th-color').value.trim(),
+            bg_image:document.getElementById('th-image').value.trim()};
+  api('POST','/api/webui',body).then(function(s){
+    document.getElementById('th-msg').textContent='已保存，刷新 /panel 即可看到新背景。';
+    toast('外观已保存',true);
+  }).catch(function(e){document.getElementById('th-msg').textContent='';toast('保存失败：'+e.message,false);});
+};
 
 function loadAudit(){
   var limit=document.getElementById('al-limit').value;

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import sys
@@ -731,11 +732,52 @@ class ConcurrencyGate:
             }
 
 
+_DEFAULT_BG = "background:#F7F6F3;"
+
+# 转发链路 Hops 上限：默认 4 覆盖「官方/本地上游 + 两三级中转」的真实拓扑。
+# 环境变量 RELAYHUB_MAX_HOPS 可调大——级联更多家中转站时放宽，不是判环的唯一防线。
+try:
+    MAX_HOPS = max(1, int(os.environ.get("RELAYHUB_MAX_HOPS") or 4))
+except ValueError:
+    MAX_HOPS = 4
+
+
+def _panel_bg_css() -> str:
+    """从 webui.json 读外观配置，生成 body 背景 CSS。
+
+    配置在管理台写入时已按白名单校验过，这里**再**校验一遍：面板是公网面，
+    webui.json 落盘后可能被人手改过——读侧不信任写侧是老规矩。文件缺失、
+    损坏、字段不合法一律回默认米白底（展示偏好，坏一点不值得 500）。
+    """
+    try:
+        cfg = json.loads(paths.webui_theme_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _DEFAULT_BG
+    color = str(cfg.get("bg_color") or "")
+    image = str(cfg.get("bg_image") or "")
+    css = ""
+    if re.fullmatch(r"#[0-9a-fA-F]{3,8}", color):
+        css += f"background-color:{color};"
+    if image.startswith(("http://", "https://")) and not any(
+        c in image for c in " \t\r\n\"'<>\\()"
+    ):
+        css += (
+            f"background-image:url('{image}');"
+            "background-size:cover;background-attachment:fixed;background-position:center;"
+        )
+    return css or _DEFAULT_BG
+
+
+def _apply_panel_theme(html: str) -> str:
+    """把背景 CSS 注入面板模板的占位符（没有占位符就原样返回）。"""
+    return html.replace("__THEME_BG__", _panel_bg_css(), 1)
+
+
 PANEL_HTML = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>relay-hub 用户面板</title>
 <style>
-body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:#F7F6F3;
+body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;__THEME_BG__
 color:#26215C;margin:0;display:flex;justify-content:center;min-height:100vh}
 .box{background:#fff;border:1px solid #E3E1DA;border-radius:14px;padding:28px;
 max-width:420px;width:92%;margin:60px 0;box-shadow:0 2px 8px rgba(38,33,92,.06);height:fit-content}
@@ -1606,7 +1648,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "server": "relay-hub"})
             return
         if path == "/panel":
-            self._send_html(PANEL_HTML)
+            self._send_html(_apply_panel_theme(PANEL_HTML))
             return
         if path == "/api/user/me":
             user = self._session_user()
@@ -1789,7 +1831,11 @@ class RelayHandler(BaseHTTPRequestHandler):
             inbound_hops = 0
         request_id = (self.headers.get("X-Request-ID") or uuid.uuid4().hex)[:64]
         self._current_request_id = request_id
-        if inbound_hops >= 4 or instance in inbound_via:
+        # Hops 上限可配置（RELAYHUB_MAX_HOPS，默认 4）：覆盖「多家中转站级联」的
+        # 合法长链。判环本身不靠 Hops 单打——Via 里的实例标记是每次启动随机生成
+        # 的唯一 id（relayhub-<hex8>），部署之间不会撞；所以 A 站 → B 站（两家都用
+        # relay-hub）是正常链路，B 只认自己的标记；只有链路真的绕回同一实例才判环。
+        if inbound_hops >= MAX_HOPS or instance in inbound_via:
             self._error(
                 508,
                 "检测到转发环路：Via/Hops 链路标识显示本请求已经过本站。"

@@ -1099,6 +1099,32 @@ def _print_station_hint(station: "toip_module.StationIdentity") -> None:
     print(f"  验证器 App：{toip_module.otpauth_uri(station.secret, label=station.name)}")
 
 
+def _cmd_toip_qr(args: argparse.Namespace) -> int:
+    """把 otpauth:// 登记二维码打到终端（验证器 App 直接扫屏）。
+
+    装了 qr 扩展（pip install "hubrelay[qr]"）画 ASCII 二维码；没装退化为
+    打印 otpauth URI 明文——验证器 App 手动添加效果一致。
+    """
+    station = toip_module.load_station(paths.toip_station_path())
+    if station is None:
+        print("尚未创建 TOIP 站点。先执行：relayhub.gateway toip station", file=sys.stderr)
+        return 1
+    uri = toip_module.otpauth_uri(station.secret, label=station.name)
+    try:
+        import qrcode  # 可选依赖
+    except ImportError:
+        print("otpauth URI（未装 qr 扩展，可手动添加到验证器）：")
+        print(f"  {uri}")
+        print('  想直接出二维码：pip install "hubrelay[qr]" 后重跑本命令。')
+        return 0
+    qr = qrcode.QRCode(border=2)
+    qr.add_data(uri)
+    qr.print_ascii(invert=True)
+    print(f"站点：{station.name}（{station.station_id}）")
+    print("用验证器 App 扫上方二维码；动态口令 30 秒滚动，插件接入时填当前口令。")
+    return 0
+
+
 def _cmd_toip_ticket(args: argparse.Namespace) -> int:
     """签一枚通行证：产出登记口令（一次性）并可立刻读出现行动态口令。"""
     station = toip_module.load_station(paths.toip_station_path())
@@ -1299,6 +1325,9 @@ def _cmd_toip(argv: list[str]) -> int:
     p_station.add_argument("--base-url", dest="base_url", default=None, help="显式对外地址（跨网段/NAT 后无法从来源推断时用）")
     p_station.add_argument("--force", action="store_true", help="已存在时轮换口令种子")
     p_station.set_defaults(func=_cmd_toip_station)
+
+    p_qr = sub.add_parser("qr", help="把 otpauth:// 登记二维码打到终端（验证器 App 扫码）")
+    p_qr.set_defaults(func=_cmd_toip_qr)
 
     p_ticket = sub.add_parser("ticket", help="为一台设备/一个插件签一枚通行证（登记口令）")
     p_ticket.add_argument("--name", required=True, help="通行证名（设备名，吊销时按它找）")

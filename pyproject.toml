@@ -1,11 +1,12 @@
 [project]
 name = "hubrelay"
-version = "0.3.0"
+version = "0.4.0"
 description = "Self-hosted LLM relay/gateway for LAN: multi-upstream key pool, downstream tokens, usage accounting, conformance probing; TOIP dynamic-password onboarding for DeepSeek Harness plugins (局域网大模型中转站)"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = []
+
 keywords = ["llm", "gateway", "relay", "proxy", "openai", "anthropic", "one-api",
             "self-hosted", "ollama", "lm-studio", "api-gateway", "key-pool",
             "chatgpt-proxy", "localai", "totp", "otp", "toip", "plugin",
@@ -40,3 +41,8 @@ py-modules = ["hubrelay"]
 
 [tool.setuptools.packages.find]
 include = ["relayhub*"]
+
+[project.optional-dependencies]
+# 站控「显示扫码登记」与管理台二维码的画图库——可选：不装也能用，
+# 站控降级显示 otpauth:// 明文链接，验证器手动添加效果一致。
+qr = ["qrcode>=8.0"]

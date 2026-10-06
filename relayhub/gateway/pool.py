@@ -18,6 +18,8 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+from . import secretbox
 from typing import Callable, Sequence
 
 PROTOCOL_ANTHROPIC = "anthropic-messages"

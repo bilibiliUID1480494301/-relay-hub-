@@ -78,6 +78,15 @@ def toip_tickets_path() -> Path:
     return relayhub_home() / "toip_tickets.json"
 
 
+def webui_theme_path() -> Path:
+    """公网面板外观配置（背景色 / 背景图 URL）。
+
+    独立文件的理由：纯展示偏好，与凭证/策略的敏感度和轮换节奏都不同；
+    文件丢了或坏了也只是回到默认外观，不值得挤进任何凭证文件。
+    """
+    return relayhub_home() / "webui.json"
+
+
 def plugin_logs_root() -> Path:
     """插件日志根目录（<home>/pluginlogs/<plugin_id>/…）。
 

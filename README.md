@@ -239,6 +239,20 @@ hubrelay toip revoke dsh-laptop               # 吊销通行证并收回其会�
 
 ## Highlights (English)
 
+- **Cascading relays are first-class**: the loop marker is a per-boot random
+  instance id (`relayhub-<hex8>`), so two parties both running relay-hub chain
+  just fine (A's upstream = B's URL) — only a request that actually returns to
+  the *same* instance is rejected. The hop ceiling is tunable
+  (`RELAYHUB_MAX_HOPS`, default 4) for legitimately deeper cascades.
+- **Secrets encrypted at rest**: upstream keys (`pool.json`) and the TOIP seed
+  (`toip.json`) are sealed with Windows DPAPI (CurrentUser) — a stolen file on
+  another machine/account is worthless. Legacy plaintext files upgrade on next
+  save; non-Windows falls back to 0600 with a startup warning.
+- **TOIP QR onboarding**: `hubrelay toip qr` prints the `otpauth://` QR in the
+  terminal; the admin console has a "show enrollment QR" button (server-side
+  PNG with the optional `qr` extra, audited per reveal).
+- **Panel theming**: customize the `/panel` background (color / image URL)
+  from the admin console, with strict allow-list validation (no CSS injection).
 - **Three-layer loop protection**: forwarding chain markers (`Via` /
   `X-Relay-Hub-Hops` / `X-Request-ID`, accumulated per hop; a mark from this very
   instance immediately means a loop) + in-flight content-fingerprint counting at
@@ -266,6 +280,17 @@ hubrelay toip revoke dsh-laptop               # 吊销通行证并收回其会�
 
 ## 特色 Highlights（中文）
 
+- **级联中继是一等公民**：判环标记是每次启动随机生成的唯一实例 id
+  （`relayhub-<hex8>`），两家都部署 relay-hub 时 A 的上游指 B 完全没问题——
+  只有请求真的绕回**同一个**实例才判环。级联更深时用 `RELAYHUB_MAX_HOPS`
+  （默认 4）放宽跳数上限。
+- **落盘凭证加密**：上游密钥（pool.json）与 TOIP 口令种子（toip.json）用
+  Windows DPAPI（当前用户域）加密——文件被拷到别的机器/账户等于废纸；历史
+  明文文件下次保存自动升级；非 Windows 诚实降级 0600 + 启动警告。
+- **TOIP 扫码接入**：`hubrelay toip qr` 终端直接打印 otpauth 二维码；管理台
+  有「显示扫码登记」按钮（装可选 `qr` 扩展出 PNG 图，每次下发都留审计）。
+- **面板外观自定义**：管理台配置 `/panel` 背景（纯色 / 图片 URL），入参
+  白名单严格校验，拒绝 CSS 注入。
 - **三层防环路** Loop protection：转发链路标识（`Via` / `X-Relay-Hub-Hops` /
   `X-Request-ID`，逐跳累加，本站实例标记一现即判环）+ 入口请求内容指纹在飞计数 +
   出口「同指纹 × 同上游」时间窗查重。就算中间隔了会改写参数的第三方网关也能兜住，
