@@ -54,7 +54,9 @@ from .gateway.tokens import (
     generate_token,
 )
 
-__version__ = "0.2.12"
+# 版本随包根（relayhub/__init__._detect_version：仓库内读 pyproject，安装后读
+# 发行元数据）。曾经硬编码在 0.2.12 腐烂了四个版本——别再写死。
+from . import __version__  # noqa: F401
 
 __all__ = [
     "Station",

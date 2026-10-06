@@ -1,19 +1,24 @@
-# relay-hub · Self-hosted LLM Relay / 局域网自托管大模型中转站
+# relay-hub · Self-hosted LLM Gateway / 自托管大模型中转站
 
 [![CI](https://github.com/bilibiliUID1480494301/relay-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/bilibiliUID1480494301/relay-hub/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
 
-**English** | A self-hosted LLM relay/gateway: unify many upstreams (official API
-keys, local self-hosted inference servers) behind one OpenAI/Anthropic-compatible
-endpoint, with key-pool scheduling, downstream tokens, usage accounting, tiered
-circuit breaking, and conformance probing. Pure Python standard library — zero
-third-party runtime dependencies.
+**English** | A self-hosted LLM gateway: unify many upstreams (official API keys,
+local inference servers, other relay stations) behind one OpenAI/Anthropic-compatible
+endpoint, with key-pool scheduling, downstream tokens, quota & usage accounting,
+tiered circuit breaking, and conformance probing. Deploy it where the users are —
+a laptop for yourself, the LAN for a classroom, the public internet for a team
+(behind any tunnel or reverse proxy: cloudflared / ngrok / frp / nginx / Caddy).
+Pure Python standard library — zero third-party runtime dependencies, no database,
+no Node.js.
 
-**中文** | 一个自托管的大模型中转站：把多家上游（官方 API Key、本地自托管推理服务）
-统一成一个 OpenAI/Anthropic 兼容入口，带号池调度、下游令牌、用量记账、分级熔断和
-一致性探测。纯 Python 标准库实现，零第三方运行时依赖。
+**中文** | 一个自托管的大模型网关/中转站：把多家上游（官方 API Key、本地推理服务、
+别家中转站）统一成一个 OpenAI/Anthropic 兼容入口，带号池调度、下游令牌、额度记账、
+分级熔断和一致性探测。部署半径跟着用户走——自己用放本机，教室/工作组放局域网，
+面向公网就挂一条隧道或反代（cloudflared / ngrok / frp / nginx / Caddy）直接上线。
+纯 Python 标准库实现：零第三方运行时依赖、不装数据库、不依赖 Node.js。
 
 ## Features (English)
 
@@ -22,6 +27,16 @@ third-party runtime dependencies.
   rate-limit / 5xx / auth-failure); hot reload.
 - **Downstream tokens**: per-device tokens (one-api style) with model whitelist,
   RPM/daily limits, usage accounting; plaintext shown once, SHA-256 at rest.
+- **Deploy anywhere the users are**: `hubrelay serve` binds loopback by default;
+  `--host` opens it to the LAN; `--public` (0.0.0.0) refuses to start without
+  credentials. Internet-facing deployments put any tunnel or reverse proxy in
+  front (cloudflared / ngrok / frp / nginx / Caddy) — same station, same tokens,
+  from a laptop to a VPS.
+- **Python SDK & one-line station**: `pip install hubrelay`, then
+  `st, url = hubrelay.quickstart("http://127.0.0.1:11434")` — or the full
+  `Station` API. On the client side, `StationClient` speaks
+  models/messages/MCP/A2A with an optional E2E envelope — both sides pure
+  stdlib, both importable from the package root.
 - **Dual protocol + embeddings**: `POST /v1/messages` (Anthropic),
   `POST /v1/chat/completions` and `POST /v1/embeddings` (OpenAI) behind the same
   credential — RAG / text tools work out of the box.
@@ -49,6 +64,14 @@ third-party runtime dependencies.
   四档分级冷却（额度耗尽 / 限流 / 5xx / 鉴权失效），热加载。
 - **下游令牌** Downstream tokens：per-device 令牌（对标 one-api 的「令牌」），模型白名单、
   RPM/每日限额、用量记账，明文只在发放时出现一次。
+- **部署半径跟着用户走**：`hubrelay serve` 默认只绑本机回环；`--host` 开到局域网；
+  `--public`（0.0.0.0）没有凭证拒绝启动。要上公网就在前面挂一条隧道或反代
+  （cloudflared / ngrok / frp / nginx / Caddy）——同一座站、同一套令牌，
+  从笔记本到 VPS。
+- **Python SDK 与一行建站**：`pip install hubrelay` 后
+  `st, url = hubrelay.quickstart("http://127.0.0.1:11434")` 即起站；客户端侧
+  `StationClient` 打模型/MCP/A2A，可选 E2E 信封——两侧都是纯标准库，
+  都从包根直接导入。
 - **多协议入口** Multi-protocol：`POST /v1/messages`（Anthropic）、
   `POST /v1/chat/completions`、`POST /v1/embeddings`、`POST /v1/responses`
   （OpenAI，含流式；新版 IDE/Agent 客户端开箱即用），同一令牌多种鉴权头都认。
@@ -475,6 +498,18 @@ One-liner: `st, url = hubrelay.quickstart("http://127.0.0.1:11434", models=["qwe
 Every method carries bilingual (EN/中文) docstrings; pool & token files are fully
 interchangeable with the CLI.
 
+Client side — the package root also exports the SDK (pure stdlib; E2E optional):
+
+```python
+from relayhub import StationClient   # `import hubrelay` exposes the same names
+
+c = StationClient("http://192.168.1.10:8799", token="rht_...")
+print(c.whoami())     # identity / quota / expiry on this station
+print(c.models())     # models this token may use
+reply = c.messages({"model": "glm-5.2", "max_tokens": 256,
+                    "messages": [{"role": "user", "content": "hi"}]})
+```
+
 ## Python API 建站（中文，不想碰命令行看这里）
 
 ```python
@@ -498,6 +533,18 @@ url = st.serve(background=True)  # 非阻塞；st.stop() 停站
 一行版：`st, url = hubrelay.quickstart("http://127.0.0.1:11434", models=["qwen2.5"])`。
 号池/令牌文件与 CLI 完全互通（`Station(home=...)` 对应 CLI 的 `--pool/--tokens`）。
 
+客户端侧——包根直接导出 SDK（纯标准库，E2E 可选）：
+
+```python
+from relayhub import StationClient   # `import hubrelay` 是同一套名字
+
+c = StationClient("http://192.168.1.10:8799", token="rht_...")
+print(c.whoami())     # 本站身份 / 额度 / 过期时间
+print(c.models())     # 这枚令牌可选的模型
+reply = c.messages({"model": "glm-5.2", "max_tokens": 256,
+                    "messages": [{"role": "user", "content": "你好"}]})
+```
+
 ## Docker (English)
 
 ```bash
@@ -515,13 +562,6 @@ credentials.
 `docker compose up -d` 一条命令起站；号池 / 令牌 / 日志全部落在挂载的 `./data`
 卷里，换机器搬目录即迁移。服务端安全闸不变：`--public` 无凭证拒绝启动。
 建议先 `docker compose exec relay hubrelay token add my-phone` 发一枚令牌。
-
-Health: `GET /healthz` (no credentials) is wired into the image `HEALTHCHECK`;
-request logs auto-prune after 30 days (`--log-retention-days`, 0 = keep forever).
-
-健康检查：镜像内置 `HEALTHCHECK` 打 `/healthz`（无需凭证）；请求明细默认保留
-30 天自动清理（`--log-retention-days` 调整，0=永久）。`/v1/models` 现在按令牌
-白名单过滤——受限令牌只看到自己能用的模型。
 
 Health: `GET /healthz` (no credentials) is wired into the image `HEALTHCHECK`;
 request logs auto-prune after 30 days (`--log-retention-days`, 0 = keep forever).

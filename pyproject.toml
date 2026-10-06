@@ -1,25 +1,37 @@
 [project]
 name = "hubrelay"
-version = "0.7.0"
-description = "Self-hosted LLM relay/gateway for LAN: multi-upstream key pool, downstream tokens, usage accounting, conformance probing; TOIP dynamic-password onboarding for DeepSeek Harness plugins (局域网大模型中转站)"
+version = "0.8.0"
+description = "Self-hosted LLM gateway & relay station, from LAN to the public internet (tunnel-friendly): multi-upstream key pool, downstream tokens, quota & usage accounting, MCP & A2A routing, E2E envelope encryption, one-line Python station setup; OpenAI/Anthropic-compatible (自托管大模型中转站/网关，局域网与公网两用)"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = []
 
-keywords = ["llm", "gateway", "relay", "proxy", "openai", "anthropic", "one-api",
-            "self-hosted", "ollama", "lm-studio", "api-gateway", "key-pool",
-            "chatgpt-proxy", "localai", "totp", "otp", "toip", "plugin",
-            "deepseek-harness", "dsh-plugin", "中转站", "大模型"]
+keywords = ["llm", "llm-gateway", "llm-proxy", "gateway", "relay", "proxy",
+            "openai", "anthropic", "openai-proxy", "anthropic-proxy",
+            "one-api", "new-api", "api-gateway", "api-station",
+            "self-hosted", "self-hosted-ai", "ollama", "lm-studio", "localai",
+            "key-pool", "load-balancing", "token", "usage-accounting", "quota",
+            "chatgpt-proxy",
+            "tunnel", "cloudflare-tunnel", "ngrok", "frp", "public-internet",
+            "e2e", "e2e-encryption", "encryption", "x25519", "aes-gcm",
+            "mcp", "model-context-protocol", "a2a", "agent2agent",
+            "totp", "otp", "toip", "plugin", "deepseek-harness", "dsh-plugin",
+            "quickstart", "python-sdk", "model-station",
+            "中转站", "大模型", "网关", "自托管", "端到端加密", "令牌", "计费"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
   "Topic :: System :: Networking",
   "Topic :: Software Development :: Libraries",
 ]
