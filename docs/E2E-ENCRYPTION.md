@@ -89,3 +89,29 @@ plaintext + 0600 with a startup warning — we do not ship home-rolled crypto.
 上游密钥（pool.json）与 TOTP 种子（toip.json）已用 Windows DPAPI（当前用户
 域）加密落盘：文件被拷到别的机器或别的账户都解不开。非 Windows 平台诚实
 降级为明文 + 0600 + 启动警告——不上自研密码学。
+
+## Both halves now ship / 两半边都已在包内（0.7.0）
+
+0.5.0 shipped the station half (`open_envelope`). 0.7.0 ships the **client
+half** as a public function — `relayhub.gateway.e2e.seal_envelope` — so a
+Python client can talk E2E without hand-rolling crypto:
+
+0.5.0 交付了站点半边（`open_envelope`）。0.7.0 把**客户端半边**做成公开
+函数 `relayhub.gateway.e2e.seal_envelope`，Python 客户端不用手搓密码学：
+
+```python
+from relayhub.gateway.e2e import seal_envelope
+
+envelope = seal_envelope(params["server_public"], params["key_id"],
+                         payload, credential)   # salt = supplied credential
+# POST with Content-Type: application/x-relayhub-envelope+json
+```
+
+`seal_envelope` is stateless (fresh ephemeral X25519 per call), mirrors
+`open_envelope` field-for-field, and is what `StationClient` calls in
+`e2e="auto"/"require"` mode — including the key-rotation retry. Unit tests
+pin the mirror property (seal→open round-trip) and credential binding.
+
+`seal_envelope` 无状态（每次调用新临时 X25519），与服务端逐字段镜像，
+`StationClient` 的 auto/require 模式走的就是它（含 key 轮换重试）。单元
+测试钉住了镜像性（seal→open 闭环）与凭证绑定。

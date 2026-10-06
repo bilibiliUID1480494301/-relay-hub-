@@ -213,3 +213,49 @@ def open_envelope(
     if not isinstance(payload, dict):
         raise E2eError("信封明文必须是 JSON 对象")
     return payload
+
+
+def seal_envelope(
+    server_public: str | bytes,
+    key_id: str,
+    payload: dict[str, Any],
+    credential: str,
+    *,
+    ts: int | None = None,
+    nonce: bytes | None = None,
+) -> dict[str, Any]:
+    """客户端半边：把 payload 封成信封（与 open_envelope 互为镜像）。
+
+    盐取「本次供应的凭证串」——与服务端 `_supplied_credential()` 同一口径，
+    同一份密文换个令牌就解不开。nonce/ts 仅测试注入用，生产调用一个别传；
+    本函数无状态（每请求新临时密钥），可放心并发。
+
+    `relayhub.client.StationClient` 在 e2e 模式下自动调用本函数并处理
+    key 轮换重试；直接拿协议用的人才需要手动调它。
+    """
+    mod = _crypto()
+    if mod is None:
+        raise E2eError("未安装 cryptography（pip install \"hubrelay[e2e]\"）")
+    X25519PrivateKey, X25519PublicKey, AESGCM, _, _ = mod
+    pub_raw = _b64d(server_public) if isinstance(server_public, str) else server_public
+    if len(pub_raw) != 32:
+        raise E2eError("server_public 必须是 32 字节 X25519 公钥")
+    eph = X25519PrivateKey.generate()
+    shared = eph.exchange(X25519PublicKey.from_public_bytes(pub_raw))
+    key = derive_key(shared, credential)
+    nonce = secrets.token_bytes(12) if nonce is None else nonce
+    if len(nonce) != 12:
+        raise E2eError("nonce 必须是 12 字节")
+    ts = int(time.time()) if ts is None else int(ts)
+    eph_pub = eph.public_key().public_bytes_raw()
+    aad = _aad(key_id, eph_pub, nonce, ts)
+    plaintext = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad)
+    return {
+        "v": 1,
+        "key_id": key_id,
+        "eph": _b64e(eph_pub),
+        "nonce": _b64e(nonce),
+        "ts": ts,
+        "ciphertext": _b64e(ciphertext),
+    }
