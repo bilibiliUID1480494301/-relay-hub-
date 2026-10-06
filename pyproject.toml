@@ -1,6 +1,6 @@
 [project]
 name = "hubrelay"
-version = "0.4.0"
+version = "0.5.0"
 description = "Self-hosted LLM relay/gateway for LAN: multi-upstream key pool, downstream tokens, usage accounting, conformance probing; TOIP dynamic-password onboarding for DeepSeek Harness plugins (局域网大模型中转站)"
 readme = "README.md"
 license = {text = "MIT"}
@@ -46,3 +46,5 @@ include = ["relayhub*"]
 # 站控「显示扫码登记」与管理台二维码的画图库——可选：不装也能用，
 # 站控降级显示 otpauth:// 明文链接，验证器手动添加效果一致。
 qr = ["qrcode>=8.0"]
+# MCP/A2A/LLM 三协议共用的端到端信封加密（X25519 + AES-256-GCM）。
+e2e = ["cryptography>=42.0"]

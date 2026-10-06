@@ -239,6 +239,14 @@ hubrelay toip revoke dsh-laptop               # 吊销通行证并收回其会�
 
 ## Highlights (English)
 
+- **E2E envelope encryption (0.5.0)**: opt-in end-to-end payload encryption
+  between plugin and station — X25519 + HKDF-SHA256 + AES-256-GCM, per-request
+  ephemeral keys, monotonic-nonce replay rejection, credentials bound into the
+  key derivation. Optional extra (`hubrelay[e2e]`); plain traffic keeps working.
+- **MCP gateway (0.5.0)**: the station speaks MCP (JSON-RPC 2.0). Upstream MCP
+  servers are pooled like model channels (`hubrelay mcp add`), tools are
+  namespaced `<channel>.<tool>`, and every call is accounted per downstream
+  token x channel. Same auth, blacklist and E2E envelope as LLM traffic.
 - **Cascading relays are first-class**: the loop marker is a per-boot random
   instance id (`relayhub-<hex8>`), so two parties both running relay-hub chain
   just fine (A's upstream = B's URL) — only a request that actually returns to
@@ -280,6 +288,12 @@ hubrelay toip revoke dsh-laptop               # 吊销通行证并收回其会�
 
 ## 特色 Highlights（中文）
 
+- **E2E 信封加密（0.5.0）**：插件↔中转站载荷端到端加密（可选启用）——
+  X25519 + HKDF-SHA256 + AES-256-GCM，每请求一次性密钥，单调 nonce 拒重放，
+  凭证参与密钥派生（信封与身份绑定）。可选依赖 `hubrelay[e2e]`，明文流量照常。
+- **MCP 网关（0.5.0）**：站点说 MCP（JSON-RPC 2.0）。上游 MCP server 像模型
+  渠道一样入池（`hubrelay mcp add`），工具名 `<渠道>.<工具>` 前缀防撞，
+  每次调用按下游令牌 × 渠道记账——鉴权、拉黑、E2E 信封与 LLM 流量同一套。
 - **级联中继是一等公民**：判环标记是每次启动随机生成的唯一实例 id
   （`relayhub-<hex8>`），两家都部署 relay-hub 时 A 的上游指 B 完全没问题——
   只有请求真的绕回**同一个**实例才判环。级联更深时用 `RELAYHUB_MAX_HOPS`

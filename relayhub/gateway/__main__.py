@@ -1363,11 +1363,84 @@ def _cmd_toip(argv: list[str]) -> int:
     l_forget.add_argument("--yes", action="store_true", help="确认删除（不加则只提示）")
     l_forget.set_defaults(func=_cmd_toip_logs)
 
+    mcp_sub = sub.add_parser("mcp", help="MCP 网关渠道：add / ls / rm")
+    mcp_actions = mcp_sub.add_subparsers(dest="action", required=True)
+    m_add = mcp_actions.add_parser("add", help="接入一个上游 MCP server")
+    m_add.add_argument("name", help="渠道名（下游工具名前缀 <渠道>.<工具>）")
+    m_add.add_argument("url", help="上游 MCP 端点地址")
+    m_add.add_argument("--header", action="append", default=[],
+                       help="上游鉴权头，形如 'Authorization=Bearer xxx'（可重复）")
+    m_add.set_defaults(func=_cmd_mcp_add)
+    m_ls = mcp_actions.add_parser("ls", help="列出 MCP 渠道")
+    m_ls.set_defaults(func=_cmd_mcp_ls)
+    m_rm = mcp_actions.add_parser("rm", help="移除 MCP 渠道")
+    m_rm.add_argument("name", help="渠道名")
+    m_rm.set_defaults(func=_cmd_mcp_rm)
+
     args = parser.parse_args(argv)
     return int(args.func(args))
 
 
+# ---------------------------------------------------------------- mcp
+
+
+def _cmd_mcp_add(args: argparse.Namespace) -> int:
+    from .gateway.mcp import McpChannel, McpChannelPool
+
+    pool_path = paths.mcp_channels_path()
+    pool = McpChannelPool.load(pool_path)
+    headers: dict[str, str] = {}
+    for pair in args.header or []:
+        if "=" not in pair:
+            print(f"--header 形如 'Authorization: Bearer x' 用 = 分隔？收到：{pair}", file=sys.stderr)
+            return 1
+        key, value = pair.split("=", 1)
+        headers[key.strip()] = value.strip()
+    channel = McpChannel(
+        channel_id=uuid.uuid4().hex[:12],
+        name=args.name.strip(),
+        url=args.url.strip(),
+        headers=headers,
+        created_at=time.time(),
+    )
+    try:
+        pool.add(channel)
+    except ValueError as exc:
+        print(f"添加失败：{exc}", file=sys.stderr)
+        return 1
+    pool.save(pool_path)
+    print(f"MCP 渠道已添加：{channel.name} → {channel.url}（{len(headers)} 个自定义头）")
+    print(f"  下游工具名前缀：{channel.name}.<tool>；查看：hubrelay mcp ls")
+    return 0
+
+
+def _cmd_mcp_ls(args: argparse.Namespace) -> int:
+    from .gateway.mcp import McpChannelPool
+
+    pool = McpChannelPool.load(paths.mcp_channels_path())
+    if not pool.channels:
+        print("（还没有 MCP 渠道。添加：hubrelay mcp add <名称> <地址>）")
+        return 0
+    for channel in pool.channels:
+        state = "启用" if channel.enabled else "停用"
+        print(f"  {channel.name:<20} {state}  {channel.url}  headers={len(channel.headers)}")
+    return 0
+
+
+def _cmd_mcp_rm(args: argparse.Namespace) -> int:
+    from .gateway.mcp import McpChannelPool
+
+    pool = McpChannelPool.load(paths.mcp_channels_path())
+    if not pool.remove(args.name):
+        print(f"找不到渠道：{args.name}", file=sys.stderr)
+        return 1
+    pool.save(paths.mcp_channels_path())
+    print(f"已移除：{args.name}")
+    return 0
+
+
 # ---------------------------------------------------------------- audit
+
 
 
 def _cmd_audit(args: argparse.Namespace) -> int:

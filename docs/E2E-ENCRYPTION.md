@@ -50,6 +50,24 @@ join (existing / TOIP)                    join（现有 TOIP 流程）
   TOIP 的站点指纹（station id）承担这个角色。站点身份认证由 TOIP 的
   station id 承担。
 
+## What sniffing the wire yields / 抓包到底能拿到什么
+
+```
+plugin ──(downstream token)──▶ station ──(upstream sk-***)──▶ real upstream
+```
+
+Upstream keys **never cross the wire**: the station swaps in its own sealed
+credential server-side. Sniffing the plugin↔station link exposes prompt
+contents and the downstream token — an attacker can burn quota by replaying,
+but cannot recover the upstream key. The 0.5.x envelope closes both (payload
+confidentiality + monotonic-nonce replay rejection). 0.4.0's DPAPI sealing
+covers the at-rest half of the same threat model.
+
+上游密钥从不过网：中转站在服务端换用自己的凭证。抓包插件↔中转站的链路只能
+看到 prompt 内容与下游令牌——攻击者重放能烧额度，但推不出上游密钥。0.5.x
+的信封同时封掉这两个洞（内容机密性 + 单调 nonce 重放拒绝）；0.4.0 的 DPAPI
+加密覆盖同一威胁模型的落盘半边。
+
 ## Relationship to the TOTP secret / 与 TOTP 种子的关系
 
 The TOTP seed never crosses the wire (join proves possession of the rolling

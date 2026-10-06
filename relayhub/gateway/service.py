@@ -27,6 +27,8 @@ from typing import Any, Iterable, Iterator
 from .. import paths
 from .. import __version__ as relayhub_version
 from . import audit as audit_module
+from . import e2e as e2e_module
+from . import mcp as mcp_module
 from . import clients as clients_module
 from . import pluginlogs
 from . import reqlog
@@ -1574,6 +1576,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._error(400, "Content-Length 非法", dialect=dialect)
             return None
         raw = self.rfile.read(length) if length else b""
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype == e2e_module.ENVELOPE_CONTENT_TYPE:
+            return self._open_envelope(raw, dialect)
         try:
             parsed = json.loads(raw.decode("utf-8") or "{}")
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -1583,6 +1588,35 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._error(400, "请求体必须是 JSON 对象", dialect=dialect)
             return None
         return parsed
+
+    def _open_envelope(self, raw: bytes, dialect: str) -> dict[str, Any] | None:
+        """解开 E2E 信封，把明文请求交给既有链路。
+
+        解密发生在鉴权**之后**（调用方保证），盐用本次供应的凭证串——同一份
+        密文换个令牌就是密文不匹配，信封与身份绑定。解密失败统一 400：
+        具体失败原因（密钥/GCM 校验）对窃听者也是信息，不外泄细节。
+        """
+        try:
+            envelope = json.loads(raw.decode("utf-8") or "{}")
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._error(400, f"信封不是合法 JSON：{exc}", dialect=dialect)
+            return None
+        if not isinstance(envelope, dict):
+            self._error(400, "信封必须是 JSON 对象", dialect=dialect)
+            return None
+        identity = self.server.e2e_identity()  # type: ignore[attr-defined]
+        try:
+            return e2e_module.open_envelope(
+                identity, envelope, self._supplied_credential(), self.server.e2e_replay  # type: ignore[attr-defined]
+            )
+        except e2e_module.E2eError as exc:
+            self._log_request(
+                started=getattr(self, "_started", time.time()), dialect=dialect,
+                identity=getattr(self, "_current_identity", None),
+                ok=False, status=400, reason=f"e2e envelope rejected: {exc}",
+            )
+            self._error(400, str(exc), "invalid_request_error", dialect)
+            return None
 
     # -- SSE -------------------------------------------------------------
 
@@ -1640,6 +1674,29 @@ class RelayHandler(BaseHTTPRequestHandler):
                 "<p style=\"color:#888\">凭证无效或缺失会返回 401；"
                 "超过限额返回 429。拿测试密钥做连通性检查是正常用法。</p>"
                 "</body></html>"
+            )
+            return
+        if path == "/mcp/tools":
+            authorized, identity = self._authenticate("anthropic")
+            if not authorized:
+                return
+            payload = mcp_module.list_tools(paths.mcp_channels_path())
+            self._send_json(200, payload)
+            return
+        if path == "/v1/e2e/params":
+            # E2E 信封参数（公开材料，不鉴权）：客户端拿公钥后即可加密。
+            # cryptography 缺失时回 501 + 指路，而不是 404 装作没这个功能。
+            if e2e_module._crypto() is None:
+                self._send_json(
+                    501,
+                    {"ok": False, "error": "服务端未启用 E2E：pip install \"hubrelay[e2e]\""},
+                )
+                return
+            identity = self.server.e2e_identity()  # type: ignore[attr-defined]
+            self._send_json(
+                200,
+                {"scheme": e2e_module.SCHEME, "key_id": identity.key_id,
+                 "server_public": identity.public_b64(), "ts_window": e2e_module.TS_WINDOW},
             )
             return
         if path == "/healthz":
@@ -1778,6 +1835,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
         if path == "/v1/embeddings":
             self._handle_embeddings()
+            return
+        if path == "/mcp":
+            self._handle_mcp()
             return
         if path.startswith("/api/auth/") or path.startswith("/api/user/"):
             self._handle_panel_api(path)
@@ -2031,6 +2091,74 @@ class RelayHandler(BaseHTTPRequestHandler):
             if fp:
                 self.loop_guard.release(fp)
 
+
+    def _handle_mcp(self) -> None:
+        """MCP 网关单入口：initialize / tools/list / tools/call（JSON-RPC 2.0）。
+
+        鉴权与 LLM 端点同一面（下游令牌/master）；Content-Type 是信封时先解密
+        ——E2E 保护层与协议无关。tools/call 按令牌 × 渠道记账（reqlog）。
+        """
+        dialect = "anthropic"
+        started = time.time()
+        authorized, identity = self._authenticate(dialect)
+        if not authorized:
+            return
+        raw_body: bytes
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._error(400, "Content-Length 非法", dialect=dialect)
+            return
+        raw_body = self.rfile.read(length) if length else b""
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        request: dict[str, Any]
+        if ctype == e2e_module.ENVELOPE_CONTENT_TYPE:
+            request = self._open_envelope(raw_body, dialect)
+            if request is None:
+                return
+        else:
+            try:
+                request = json.loads(raw_body.decode("utf-8") or "{}")
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                self._send_json(200, {"jsonrpc": "2.0", "id": None, "error": {
+                    "code": mcp_module.JSONRPC_PARSE_ERROR,
+                    "message": f"请求体不是合法 JSON：{exc}"}})
+                return
+        method = str(request.get("method") or "")
+        rpc_id = request.get("id", 1)
+        params = request.get("params") or {}
+
+        if method == "initialize":
+            self._send_json(200, {"jsonrpc": "2.0", "id": rpc_id, "result": {
+                "protocolVersion": mcp_module.MCP_PROTOCOL_VERSION,
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "relay-hub", "version": relayhub_version},
+            }})
+            return
+        if method == "tools/list":
+            self._send_json(200, {"jsonrpc": "2.0", "id": rpc_id,
+                                  "result": mcp_module.list_tools(paths.mcp_channels_path())})
+            return
+        if method == "tools/call":
+            name = str((params or {}).get("name") or "")
+            arguments = dict((params or {}).get("arguments") or {})
+            response, channel = mcp_module.call_tool(paths.mcp_channels_path(), name, arguments)
+            ok = "error" not in response
+            try:
+                reqlog.record(
+                    self.path, token=identity.name if identity is not None else "master",
+                    model=f"mcp:{name}", channel=channel or "mcp", ok=ok,
+                    status=None if ok else 502, reason=None if ok else "upstream error",
+                    latency_ms=int((time.time() - started) * 1000),
+                )
+            except Exception:  # noqa: BLE001 - 记账失败不影响应答
+                pass
+            self._record(identity, ok)
+            self._send_json(200, response)
+            return
+        self._send_json(200, {"jsonrpc": "2.0", "id": rpc_id, "error": {
+            "code": mcp_module.JSONRPC_METHOD_NOT_FOUND,
+            "message": f"未知方法 {method}（支持 initialize / tools/list / tools/call）"}})
 
     def _handle_embeddings(self) -> None:
         """/v1/embeddings：RAG/文本工具的向量端点（OpenAI 协议形态）。
@@ -2581,6 +2709,9 @@ class RelayServer(ThreadingHTTPServer):
         self.loop_guard = LoopGuard(loop_limit)
         # 链路标识：本站实例标记（进 Via 头，环路检测的最强信号）
         self.instance_id = f"relayhub-{uuid.uuid4().hex[:8]}"
+        # E2E 信封：身份懒加载（首次用到才生成/读盘），重放去重内存态
+        self._e2e_identity: e2e_module.E2eIdentity | None = None
+        self.e2e_replay = e2e_module.ReplayGuard()
         # 接入策略（拉黑 + 优先名单）：后台管理改文件即时生效（指纹热加载）。
         # 传 None = 无策略文件（全放行、全普通队），测试与单机自用零负担。
         self.policy = policy
@@ -2600,6 +2731,12 @@ class RelayServer(ThreadingHTTPServer):
         # 插件日志根（pluginlogs/ 的父目录）。None = 用默认数据根；
         # 测试传 tmp_path 让插件日志不落进真实数据根。
         self.plugin_log_home = plugin_log_home
+
+    def e2e_identity(self) -> e2e_module.E2eIdentity:
+        """站点 X25519 静态身份：首次用到才生成/读盘（secretbox 加密）。"""
+        if self._e2e_identity is None:
+            self._e2e_identity = e2e_module.load_or_create(paths.e2e_identity_path())
+        return self._e2e_identity
 
     @property
     def base_url(self) -> str:

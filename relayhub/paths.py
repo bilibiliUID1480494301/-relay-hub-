@@ -78,6 +78,21 @@ def toip_tickets_path() -> Path:
     return relayhub_home() / "toip_tickets.json"
 
 
+def mcp_channels_path() -> Path:
+    """MCP 渠道池（上游 MCP server 地址 + 鉴权头）。headers 可能有上游凭证，
+    所以走 secretbox 加密落盘，与号池同一纪律。"""
+    return relayhub_home() / "mcp_channels.json"
+
+
+def e2e_identity_path() -> Path:
+    """站点 E2E 信封的 X25519 静态私钥（secretbox 加密落盘）。
+
+    与口令种子同一纪律：私钥等价于「能解出所有信封流量」，只在本机本
+    账户可解；拷走文件在别的机器上毫无用处。轮换 = 删文件重启（key_id
+    变了，客户端拉参数自适应）。"""
+    return relayhub_home() / "e2e.json"
+
+
 def webui_theme_path() -> Path:
     """公网面板外观配置（背景色 / 背景图 URL）。
 
