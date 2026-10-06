@@ -27,6 +27,7 @@ from typing import Any, Iterable, Iterator
 from .. import paths
 from .. import __version__ as relayhub_version
 from . import audit as audit_module
+from . import a2a as a2a_module
 from . import e2e as e2e_module
 from . import mcp as mcp_module
 from . import clients as clients_module
@@ -1676,6 +1677,15 @@ class RelayHandler(BaseHTTPRequestHandler):
                 "</body></html>"
             )
             return
+        if path == "/.well-known/agent.json":
+            station = toip_module.load_station(paths.toip_station_path())
+            card = a2a_module.agent_card(
+                paths.a2a_agents_path(),
+                station.name if station else "relay-hub",
+                self.server.base_url,
+            )
+            self._send_json(200, card)
+            return
         if path == "/mcp/tools":
             authorized, identity = self._authenticate("anthropic")
             if not authorized:
@@ -1838,6 +1848,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
         if path == "/mcp":
             self._handle_mcp()
+            return
+        if path == "/a2a":
+            self._handle_a2a()
             return
         if path.startswith("/api/auth/") or path.startswith("/api/user/"):
             self._handle_panel_api(path)
@@ -2091,6 +2104,77 @@ class RelayHandler(BaseHTTPRequestHandler):
             if fp:
                 self.loop_guard.release(fp)
 
+
+    def _handle_a2a(self) -> None:
+        """A2A 入口：message/send 转发到注册的下游 agent。
+
+        鉴权与 LLM/MCP 同一面；params.agent 选择下游。转发带级联头（本站
+        Via 标记 + Hops+1）——两站互指 = 真环，508；合法链路畅通（与 LLM
+        中转同一套判环，测试钉在 test_relay_chain.py）。
+        """
+        dialect = "anthropic"
+        started = time.time()
+        authorized, identity = self._authenticate(dialect)
+        if not authorized:
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._error(400, "Content-Length 非法", dialect=dialect)
+            return
+        raw_body = self.rfile.read(length) if length else b""
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        request: dict[str, Any]
+        if ctype == e2e_module.ENVELOPE_CONTENT_TYPE:
+            request = self._open_envelope(raw_body, dialect)
+            if request is None:
+                return
+        else:
+            try:
+                request = json.loads(raw_body.decode("utf-8") or "{}")
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                self._send_json(200, {"jsonrpc": "2.0", "id": None, "error": {
+                    "code": -32700, "message": f"请求体不是合法 JSON：{exc}"}})
+                return
+        method = str(request.get("method") or "")
+        rpc_id = request.get("id", 1)
+        params = request.get("params") or {}
+        if method != "message/send":
+            self._send_json(200, {"jsonrpc": "2.0", "id": rpc_id, "error": {
+                "code": -32601,
+                "message": f"未知方法 {method}（支持 message/send）"}})
+            return
+        agent_name = str(params.get("agent") or "")
+        if not agent_name:
+            self._send_json(200, {"jsonrpc": "2.0", "id": rpc_id, "error": {
+                "code": -32602, "message": "params.agent 必填（目标 agent 名）"}})
+            return
+        inbound_via = self.headers.get("Via") or ""
+        try:
+            inbound_hops = int(self.headers.get("X-Relay-Hub-Hops") or 0)
+        except ValueError:
+            inbound_hops = 0
+        task = {"jsonrpc": "2.0", "id": rpc_id, "method": "message/send",
+                "params": params.get("message") or {}}
+        response = a2a_module.send_task(
+            paths.a2a_agents_path(), agent_name, task,
+            cascade_headers={
+                "Via": (inbound_via + ", " + self.server.instance_id).strip(", "),
+                "X-Relay-Hub-Hops": str(inbound_hops + 1),
+            },
+        )
+        ok = "error" not in response
+        try:
+            reqlog.record(
+                self.path, token=identity.name if identity is not None else "master",
+                model=f"a2a:{agent_name}", channel=agent_name, ok=ok,
+                status=None if ok else 502, reason=None if ok else "upstream error",
+                latency_ms=int((time.time() - started) * 1000),
+            )
+        except Exception:  # noqa: BLE001 - 记账失败不影响应答
+            pass
+        self._record(identity, ok)
+        self._send_json(200, response)
 
     def _handle_mcp(self) -> None:
         """MCP 网关单入口：initialize / tools/list / tools/call（JSON-RPC 2.0）。

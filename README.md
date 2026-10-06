@@ -239,6 +239,11 @@ hubrelay toip revoke dsh-laptop               # 吊销通行证并收回其会�
 
 ## Highlights (English)
 
+- **A2A routing (0.6.0)**: the station publishes an agent card
+  (`/.well-known/agent.json`) and forwards `message/send` tasks to registered
+  downstream agents (`hubrelay a2a add`). Cascade loop markers ride along, so
+  two relay-hub stations chaining over A2A behave exactly like model relaying.
+- **A2A 路由（0.6.0）见中文段 / see the Chinese section.**
 - **E2E envelope encryption (0.5.0)**: opt-in end-to-end payload encryption
   between plugin and station — X25519 + HKDF-SHA256 + AES-256-GCM, per-request
   ephemeral keys, monotonic-nonce replay rejection, credentials bound into the
@@ -288,6 +293,9 @@ hubrelay toip revoke dsh-laptop               # 吊销通行证并收回其会�
 
 ## 特色 Highlights（中文）
 
+- **A2A 路由（0.6.0）**：站点发布 agent card（`/.well-known/agent.json`），
+  `message/send` 任务转发到注册的下游 agent（`hubrelay a2a add`）——级联判环
+  头原样随行，两家中转站经 A2A 串联的行为与模型中转完全一致。
 - **E2E 信封加密（0.5.0）**：插件↔中转站载荷端到端加密（可选启用）——
   X25519 + HKDF-SHA256 + AES-256-GCM，每请求一次性密钥，单调 nonce 拒重放，
   凭证参与密钥派生（信封与身份绑定）。可选依赖 `hubrelay[e2e]`，明文流量照常。

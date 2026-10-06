@@ -84,6 +84,12 @@ def mcp_channels_path() -> Path:
     return relayhub_home() / "mcp_channels.json"
 
 
+def a2a_agents_path() -> Path:
+    """A2A 下游 agent 池（地址 + 接入凭证）。token 是凭证，走 secretbox 加密
+    落盘——与号池/MCP 渠道同一纪律。"""
+    return relayhub_home() / "a2a_agents.json"
+
+
 def e2e_identity_path() -> Path:
     """站点 E2E 信封的 X25519 静态私钥（secretbox 加密落盘）。
 

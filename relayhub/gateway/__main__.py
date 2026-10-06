@@ -1377,6 +1377,20 @@ def _cmd_toip(argv: list[str]) -> int:
     m_rm.add_argument("name", help="渠道名")
     m_rm.set_defaults(func=_cmd_mcp_rm)
 
+    a2a_sub = sub.add_parser("a2a", help="A2A 路由：add / ls / rm")
+    a2a_actions = a2a_sub.add_subparsers(dest="action", required=True)
+    a_add = a2a_actions.add_parser("add", help="注册一个下游 A2A agent")
+    a_add.add_argument("name", help="agent 名（params.agent 用它选路由）")
+    a_add.add_argument("url", help="下游 agent 的 A2A 端点")
+    a_add.add_argument("--token", default="", help="下游接入凭证（发 Authorization: Bearer）")
+    a_add.add_argument("--desc", default="", help="技能描述（agent card 展示）")
+    a_add.set_defaults(func=_cmd_a2a_add)
+    a_ls = a2a_actions.add_parser("ls", help="列出已注册的 agent")
+    a_ls.set_defaults(func=_cmd_a2a_ls)
+    a_rm = a2a_actions.add_parser("rm", help="移除 agent")
+    a_rm.add_argument("name", help="agent 名")
+    a_rm.set_defaults(func=_cmd_a2a_rm)
+
     args = parser.parse_args(argv)
     return int(args.func(args))
 
@@ -1439,7 +1453,59 @@ def _cmd_mcp_rm(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- a2a
+
+
+def _cmd_a2a_add(args: argparse.Namespace) -> int:
+    from .gateway.a2a import A2aAgent, A2aPool
+
+    pool_path = paths.a2a_agents_path()
+    pool = A2aPool.load(pool_path)
+    agent = A2aAgent(
+        agent_id=uuid.uuid4().hex[:12],
+        name=args.name.strip(),
+        url=args.url.strip(),
+        token=args.token or "",
+        description=args.desc or "",
+        created_at=time.time(),
+    )
+    try:
+        pool.add(agent)
+    except ValueError as exc:
+        print(f"添加失败：{exc}", file=sys.stderr)
+        return 1
+    pool.save(pool_path)
+    print(f"A2A agent 已注册：{agent.name} → {agent.url}")
+    return 0
+
+
+def _cmd_a2a_ls(args: argparse.Namespace) -> int:
+    from .gateway.a2a import A2aPool
+
+    pool = A2aPool.load(paths.a2a_agents_path())
+    if not pool.agents:
+        print("（还没有 A2A agent。注册：hubrelay a2a add <名称> <地址>）")
+        return 0
+    for agent in pool.agents:
+        state = "启用" if agent.enabled else "停用"
+        print(f"  {agent.name:<20} {state}  {agent.url}  token={'有' if agent.token else '无'}")
+    return 0
+
+
+def _cmd_a2a_rm(args: argparse.Namespace) -> int:
+    from .gateway.a2a import A2aPool
+
+    pool = A2aPool.load(paths.a2a_agents_path())
+    if not pool.remove(args.name):
+        print(f"找不到 agent：{args.name}", file=sys.stderr)
+        return 1
+    pool.save(paths.a2a_agents_path())
+    print(f"已移除：{args.name}")
+    return 0
+
+
 # ---------------------------------------------------------------- audit
+
 
 
 
